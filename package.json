@@ -1,0 +1,35 @@
+{
+  "name": "feishu-doc-ai-assistant",
+  "description": "飞书文档 AI 提效助手:需求评审 / 周报月报补全 / 会议纪要提炼 / 技术方案评审 / 复盘补全 / 通用编辑",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "compile": "tsc --noEmit",
+    "test": "vitest run",
+    "postinstall": "wxt prepare"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.11",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "tailwindcss": "^4.1.11",
+    "typescript": "^5.8.0",
+    "vitest": "^3.1.0",
+    "wxt": "^0.21.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
