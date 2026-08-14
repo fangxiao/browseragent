@@ -4,6 +4,7 @@ import {
   buildAgentSystem,
   buildScenarioTools,
   getScenarioMeta,
+  getScenarioLabel,
   assertScenarioToolsValid,
 } from '../../src/utils/ai/agents';
 import { listToolNames, toLlmTools } from '../../src/utils/domTools/toolRegistry';
@@ -80,5 +81,37 @@ describe('agents(场景配置)', () => {
     expect(s).toContain('Markdown');
     expect(s).toContain('对比');
     expect(s).toContain('引用');
+  });
+
+  it('general:通用助手 system 含全部能力介绍 + 问好引导,全工具集(UI 默认场景)', () => {
+    const s = buildAgentSystem('general');
+    expect(s).toContain('数据提取');
+    expect(s).toContain('表单填写');
+    expect(s).toContain('多平台发布');
+    expect(s).toContain('网页研究');
+    expect(s).toContain('问好');
+    expect(buildScenarioTools('general').length).toBe(listToolNames().length - 1); // 不含 evaluate
+    expect(getScenarioLabel('general')).toBe('通用助手');
+    expect(getScenarioLabel('dataExtract')).toBe('数据提取');
+  });
+
+  it('general:evaluate 默认不暴露,且提示优先在当前页面', () => {
+    const tools = buildScenarioTools('general');
+    expect(tools).not.toContain('evaluate');
+    expect(tools.length).toBe(listToolNames().length - 1);
+    expect(buildAgentSystem('general')).toContain('优先在当前页面');
+  });
+
+  it('general:提示懒加载滚动加载策略', () => {
+    expect(buildAgentSystem('general')).toContain('懒加载');
+    expect(buildAgentSystem('general')).toContain('scrollTo');
+    expect(buildAgentSystem('general')).toContain('textLimit');
+  });
+
+  it('general:要求用通俗的话与用户沟通(不甩技术词)', () => {
+    const s = buildAgentSystem('general');
+    expect(s).toContain('与用户沟通');
+    expect(s).toContain('通俗');
+    expect(s).toContain('需要你先登录');
   });
 });

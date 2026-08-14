@@ -23,10 +23,13 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
   ),
   define(
     'readPage',
-    '读取当前页面可交互元素与文本摘要,用于观察页面。可传 selector 限定范围。',
+    '读取当前页面可交互元素与文本摘要,用于观察页面。可传 selector 限定范围、textLimit 加大文本长度(懒加载长内容时用)。',
     {
       type: 'object',
-      properties: { selector: { type: 'string', description: '可选,限定读取范围(如 main、#list)' } },
+      properties: {
+        selector: { type: 'string', description: '可选,限定读取范围(如 main、#list)' },
+        textLimit: { type: 'number', description: '可选,文本摘要最大字符数,默认 2000,最大 20000' },
+      },
     },
   ),
   define(
@@ -70,12 +73,14 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
   ),
   define(
     'scrollTo',
-    '滚动到指定元素或按方向滚动页面。',
+    '滚动到指定元素或按方向滚动页面。可连续向下滚动多次,用于触发懒加载内容。',
     {
       type: 'object',
       properties: {
         selector: { type: 'string', description: '可选,滚动到该元素' },
         direction: { type: 'string', enum: ['up', 'down', 'top', 'bottom'], description: '可选,方向滚动' },
+        iterations: { type: 'number', description: '可选,连续滚动次数(触发懒加载),默认 1' },
+        intervalMs: { type: 'number', description: '可选,每次滚动间隔毫秒,默认 600' },
       },
     },
   ),

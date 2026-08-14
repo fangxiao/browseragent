@@ -131,6 +131,27 @@ export default defineBackground(() => {
       }
     };
 
+    /** 向标签页执行一次 TOOL:CALL;无接收端(页面在扩展更新前打开)时主动注入 content script 重试一次 */
+    const callToolInTab = async (tabId: number, call: ToolCall): Promise<ToolResult> => {
+      const noReceiver = (err: unknown) =>
+        /Receiving end does not exist|Could not establish connection/i.test((err as Error)?.message ?? '');
+      try {
+        const res = await browser.tabs.sendMessage(tabId, { type: 'TOOL:CALL', call });
+        return res?.result ?? { ok: false, error: '内容脚本未返回结果' };
+      } catch (err) {
+        if (noReceiver(err)) {
+          try {
+            await browser.scripting.executeScript({ target: { tabId }, files: ['/content-scripts/content.js'] });
+            const res = await browser.tabs.sendMessage(tabId, { type: 'TOOL:CALL', call });
+            return res?.result ?? { ok: false, error: '内容脚本未返回结果' };
+          } catch {
+            return { ok: false, error: '页面内容脚本未加载:请刷新页面后重试' };
+          }
+        }
+        return { ok: false, error: `工具执行失败:${(err as Error)?.message}` };
+      }
+    };
+
     const runAgent = async (payload: AgentRunPayload) => {
       if (running) return;
       running = true;
@@ -180,8 +201,7 @@ export default defineBackground(() => {
                 }
                 return result;
               }
-              const res = await browser.tabs.sendMessage(payload.tabId, { type: 'TOOL:CALL', call });
-              return res?.result ?? { ok: false, error: '内容脚本未注入或已失效,请刷新页面' };
+              return callToolInTab(payload.tabId, call);
             },
             requestConfirm: async (_call, _reason, confirmId) => {
               return new Promise<boolean>((resolve) => {

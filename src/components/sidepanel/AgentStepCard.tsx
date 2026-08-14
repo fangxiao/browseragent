@@ -31,15 +31,45 @@ function summarizeArgs(call: ToolCall): string {
   return parts.join(', ');
 }
 
-/** 工具结果摘要(截断,单行) */
-function summarizeResult(result: ToolResult): string {
+/** 工具结果摘要:按工具类型转成普通用户可读的一句话(替代原始 JSON) */
+function summarizeResult(call: ToolCall, result: ToolResult): string {
   if (!result.ok) {
     const e = typeof result.error === 'string' ? result.error : JSON.stringify(result.error ?? '');
     return e.length > 90 ? e.slice(0, 90) + '…' : e;
   }
-  if (result.data == null) return 'ok';
-  const s = typeof result.data === 'string' ? result.data : JSON.stringify(result.data);
-  return s.length > 90 ? s.slice(0, 90) + '…' : s;
+  if (result.data == null) return '完成';
+  const d = result.data as Record<string, unknown>;
+  const s = (v: unknown): string => (v != null ? String(v) : '');
+  switch (call.name) {
+    case 'readPage':
+    case 'getPageInfo':
+      return `页面:${s(d.title)}`;
+    case 'findElements':
+      return `找到 ${s(d.count) || 0} 个元素`;
+    case 'extractData': {
+      const n = Array.isArray(d.rows) ? d.rows.length : 0;
+      return `已提取 ${n} 行数据`;
+    }
+    case 'clickElement':
+      return `已点击:${s(d.clicked)}`;
+    case 'typeInto':
+      if (d.typed != null) return `已输入:${s(d.typed)}`;
+      if (d.selected != null) return `已选择:${s(d.selected)}`;
+      if (d.checked != null) return d.checked ? '已勾选' : '已取消勾选';
+      return '已填写';
+    case 'navigate':
+      return `已跳转:${s(d.url)}`;
+    case 'scrollTo':
+      return d.scrolledTo != null ? `已滚动到:${s(d.scrolledTo)}` : `已滚动${s(d.direction) ? `:${s(d.direction)}` : ''}`;
+    case 'waitFor':
+      return `已找到:${s(d.found)}`;
+    case 'sleep':
+      return `已等待 ${s(d.sleptMs) || 0}ms`;
+    case 'evaluate':
+      return '代码已执行';
+    default:
+      return s(d).length > 90 ? s(d).slice(0, 90) + '…' : s(d);
+  }
 }
 
 const TOOL_LABELS: Record<string, string> = {
@@ -91,7 +121,7 @@ export function AgentStepCard({ event }: { event: AgentEvent }) {
           } rounded`}
         >
           <span>{event.result.ok ? '✅' : '⚠️'}</span>
-          <span className="min-w-0 flex-1 break-all">{summarizeResult(event.result)}</span>
+          <span className="min-w-0 flex-1 break-all">{summarizeResult(event.call, event.result)}</span>
           {event.result.ok && csv && <ExportButtons csv={csv} filename="extracted.csv" />}
         </div>
       );

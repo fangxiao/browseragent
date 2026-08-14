@@ -63,7 +63,8 @@ export function isSensitiveToolCall(
       return { sensitive: false };
     }
     case 'evaluate':
-      return { sensitive: true, reason: '执行任意 JS,需用户确认' };
+      // 通俗文案:普通用户看到的是"在页面上运行一段代码",而非"执行任意 JS"
+      return { sensitive: true, reason: '在页面上运行一段代码(高级功能)' };
     default:
       return { sensitive: false };
   }

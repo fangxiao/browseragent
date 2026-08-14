@@ -125,3 +125,26 @@ pnpm build     # 构建 output/
 5. M1 文档对话 UI(9 能力 chips / ContentPanel / 写回 / PrivacyConfirm)不再使用;`content.ts` EXTRACT/writeback 协议保留(兼容)
 6. 遗留孤儿文件已删除(2026-08-14,用户确认):`AgentView.tsx`、`AgentConfirmModal.tsx`、`CapabilityChips.tsx`、`ContentPanel.tsx`、`PrivacyConfirm.tsx`
 7. 验证:`pnpm compile` ✅ / `pnpm test` 88 passed ✅ / `pnpm build` ✅(289.42 kB)
+
+## 会话管理(2026-08-14,用户需求)
+
+**背景**:插件对话需支持"开启新对话"+"历史对话本地保存"。
+
+**改动**:
+1. `utils/agentSessions.ts`(新):`AgentSession`/`SessionStore`;纯逻辑 `deriveTitle`(首条 user 前 20 字)/`createSession`(恢复时 streaming 复位)/`sortSessions`(更新时间倒序);`loadStore`/`saveStore` 存 `chrome.storage.local`(key `agentSessions:v1`)
+2. `main.tsx`:header 加 🆕 新对话 / 📋 历史;启动恢复最后会话;消息变化防抖 400ms 保存;会话切换/删除(至少保留一个)
+3. `SessionHistoryModal.tsx`(新):历史列表(标题+时间,当前会话 📌 标记),切换/删除
+4. 测试:`agentSessions.test.ts`(标题派生/新建复位/排序 4 项)
+5. 验证:`pnpm compile` ✅ / `pnpm test` 92 passed ✅ / `pnpm build` ✅
+
+## 通用助手交互(2026-08-14,用户反馈)
+
+**背景**:场景 chips(数据提取/表单/发布/研究)让用户先选场景,意义不明显;用户希望能力放介绍里——输入"你好",AI 回复能做什么,然后直接给目标。
+
+**改动**:
+1. `agentTypes.ts`:`ScenarioId` 增加 `general`(UI 默认)
+2. `agents/index.ts`:`GENERAL_SYSTEM`(4 能力介绍 + 问好引导 + 安全规则 + 不臆造内容),`buildAgentSystem`/`buildScenarioTools` 对 general 返回通用 system + 全工具集;`getScenarioLabel`;`ConcreteScenario` 类型
+3. `main.tsx`:移除场景 chips;`scenario: 'general'` 固定;空状态改为**欢迎介绍卡**(4 能力 + 示例)
+4. `AgentMessage.tsx`:场景标签用 `getScenarioLabel`(general → 通用助手)
+5. 测试:`agents.test.ts` 加 general 断言(system 含 4 能力 + 问好 / 全工具集 / label)
+6. 验证:`pnpm compile` ✅ / `pnpm test` 93 passed ✅ / `pnpm build` ✅

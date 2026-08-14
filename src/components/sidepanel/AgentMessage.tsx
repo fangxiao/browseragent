@@ -2,10 +2,21 @@
 // 统一对话式交互(2026-08-14,取消「对话|智能体」双模式)。
 import { useState } from 'react';
 import type { AgentEvent, ScenarioId } from '@/utils/ai/agentTypes';
-import { getScenarioMeta } from '@/utils/ai/agents';
+import { getScenarioLabel } from '@/utils/ai/agents';
+import { mdToHtml } from '@/utils/mdToHtml';
 import { AgentStepCard } from './AgentStepCard';
 
-const SCENARIO_LABELS = new Map(getScenarioMeta().map((s) => [s.id, s.label]));
+/** 渲染前清洗 AI 输出的 HTML:去 script/iframe/on* 属性,href 仅允许安全协议(防注入) */
+function sanitizeHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\shref="[^"]*"/gi, (m) => {
+      const url = m.replace(/\shref="/, '').replace(/"$/, '');
+      return /^(https?:|mailto:|#|\/)/i.test(url) ? m : ' href="#"';
+    });
+}
 
 interface Props {
   scenario: ScenarioId;
@@ -30,7 +41,8 @@ function pendingConfirm(steps: AgentEvent[]): Extract<AgentEvent, { type: 'confi
 
 export function AgentMessage({ scenario, thinking, steps, text, streaming, error, onConfirm, onCopy }: Props) {
   const [copied, setCopied] = useState(false);
-  const confirm = pendingConfirm(steps);
+  // 仅运行中展示确认按钮;结束后(agent-done/error/port 断开)自动消失,避免对已断开 port 发消息
+  const confirm = streaming ? pendingConfirm(steps) : null;
 
   const handleCopy = async () => {
     await onCopy();
@@ -43,7 +55,7 @@ export function AgentMessage({ scenario, thinking, steps, text, streaming, error
       {/* 头部:场景标签 */}
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-blue-700">
         <span>🤖</span>
-        <span>{SCENARIO_LABELS.get(scenario) ?? scenario}</span>
+        <span>{getScenarioLabel(scenario)}</span>
         {streaming && <span className="text-blue-400">运行中…</span>}
       </div>
 
@@ -81,8 +93,15 @@ export function AgentMessage({ scenario, thinking, steps, text, streaming, error
         </div>
       )}
 
-      {/* 最终结果 */}
-      {text && <div className="whitespace-pre-wrap">{text}</div>}
+      {/* 最终结果(Markdown 渲染;<br> 等 AI 常见换行标签先转成换行) */}
+      {text && (
+        <div
+          className="md-body"
+          dangerouslySetInnerHTML={{
+            __html: sanitizeHtml(mdToHtml(text.replace(/<br\s*\/?>/gi, '\n'))),
+          }}
+        />
+      )}
       {streaming && !text && <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-blue-400" />}
       {error && <div className="mt-1 rounded bg-red-50 px-2 py-1 text-red-600">{error}</div>}
 

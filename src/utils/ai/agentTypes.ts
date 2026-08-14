@@ -2,7 +2,8 @@
 import type { ToolCall, ToolResult } from '../domTools/types';
 import type { ChatMessage } from './provider/types';
 
-export type ScenarioId = 'dataExtract' | 'formFill' | 'publish' | 'research';
+/** general = 通用助手(默认,AI 自主判断任务,见 agents/index.ts);其余为细分场景(UI 不再暴露) */
+export type ScenarioId = 'general' | 'dataExtract' | 'formFill' | 'publish' | 'research';
 
 /** background → sidepanel 的 Agent 事件流 */
 export type AgentEvent =

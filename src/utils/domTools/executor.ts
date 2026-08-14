@@ -32,7 +32,12 @@ export function createDomExecutor(opts: { allowEvaluate?: boolean } = {}): DomTo
     list: () => specs,
     async execute(name, args) {
       const spec = specs.find((s) => s.name === name);
-      if (!spec) return { ok: false, error: `未知工具:${name}` };
+      if (!spec) {
+        return {
+          ok: false,
+          error: name === 'evaluate' ? '在页面上运行代码的功能未开启' : `未知工具:${name}`,
+        };
+      }
       if (!validateArgs(spec, args)) {
         return { ok: false, error: `参数不完整,必填:${(spec.required ?? []).join(', ')}` };
       }

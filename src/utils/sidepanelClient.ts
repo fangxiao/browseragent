@@ -92,8 +92,19 @@ export function startAgentSession(
   port.onDisconnect.addListener(onDisconnect);
   port.postMessage({ type: 'AGENT:START', payload } satisfies AgentPortMessage);
   return {
-    sendConfirm: (confirmId, approved) =>
-      port.postMessage({ type: 'AGENT:CONFIRM', confirmId, approved } satisfies AgentPortMessage),
-    stop: () => port.postMessage({ type: 'AGENT:STOP' } satisfies AgentPortMessage),
+    sendConfirm: (confirmId, approved) => {
+      try {
+        port.postMessage({ type: 'AGENT:CONFIRM', confirmId, approved } satisfies AgentPortMessage);
+      } catch {
+        /* port 已断开(运行已结束),忽略 */
+      }
+    },
+    stop: () => {
+      try {
+        port.postMessage({ type: 'AGENT:STOP' } satisfies AgentPortMessage);
+      } catch {
+        /* port 已断开,忽略 */
+      }
+    },
   };
 }

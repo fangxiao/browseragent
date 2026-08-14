@@ -7,6 +7,18 @@ import { buildTree, findElementsByQuery, type ElementInfo } from './elementTree'
 
 const toStr = (v: unknown): string => String(v ?? '');
 
+/** 给元素加临时高亮描边(操作视觉反馈,1.5s 后自动移除)。见 docs/design/agent.md §10 */
+function flashHighlight(el: HTMLElement, color = '#3b82f6'): void {
+  const prev = el.style.outline;
+  const prevOffset = el.style.outlineOffset;
+  el.style.outline = `2px solid ${color}`;
+  el.style.outlineOffset = '2px';
+  window.setTimeout(() => {
+    el.style.outline = prev;
+    el.style.outlineOffset = prevOffset;
+  }, 1500);
+}
+
 /** DOM → ElementInfo 树(语义元素树的数据源;深度受限避免过大) */
 function collectElementTree(root: Element, depth = 0, maxDepth = 6): ElementInfo[] {
   if (depth > maxDepth) return [];
@@ -92,6 +104,9 @@ export const actions = {
     const root: Element = sel
       ? (document.querySelector(sel) ?? document.body)
       : document.body;
+    // 文本摘要:限定的 root 区域优先;textLimit 可加大(默认 2000,最大 20000,懒加载长内容用)
+    const textLimit = Math.min(20000, Math.max(500, Number(args.textLimit ?? 2000) || 2000));
+    const summary = (root instanceof HTMLElement ? (root.innerText ?? '') : '').slice(0, textLimit);
     // 语义元素树(核心亮点):AI 据此理解页面结构
     const tree = buildTree(collectElementTree(root, 0, 4), 4, 20);
     return {
@@ -99,7 +114,7 @@ export const actions = {
       data: {
         url: location.href,
         title: document.title,
-        summary: (document.body?.innerText ?? '').slice(0, 2000),
+        summary,
         tree,
       },
     };
@@ -131,6 +146,7 @@ export const actions = {
   async clickElement(args: Record<string, unknown>): Promise<ToolResult> {
     const el = queryElement(toStr(args.selector));
     if (!el) return { ok: false, error: `未找到可点击元素:${toStr(args.selector)}` };
+    flashHighlight(el);
     el.scrollIntoView({ block: 'center', behavior: 'smooth' });
     el.click();
     return { ok: true, data: { clicked: toStr(args.selector) } };
@@ -139,6 +155,7 @@ export const actions = {
   async typeInto(args: Record<string, unknown>): Promise<ToolResult> {
     const el = queryElement(toStr(args.selector));
     if (!el) return { ok: false, error: `未找到输入框:${toStr(args.selector)}` };
+    flashHighlight(el);
     const text = toStr(args.text);
     // select 下拉:按选项文本/值定位(纯函数 findOptionIndex,已单测)
     if (el instanceof HTMLSelectElement) {
@@ -177,29 +194,33 @@ export const actions = {
   async scrollTo(args: Record<string, unknown>): Promise<ToolResult> {
     const sel = toStr(args.selector);
     const dir = toStr(args.direction);
+    const iterations = Math.max(1, Number(args.iterations ?? 1) || 1);
+    const intervalMs = Math.max(0, Number(args.intervalMs ?? 600) || 0);
     if (sel) {
       const el = document.querySelector<HTMLElement>(sel);
       if (!el) return { ok: false, error: `未找到元素:${sel}` };
+      flashHighlight(el);
       el.scrollIntoView({ behavior: 'smooth' });
       return { ok: true, data: { scrolledTo: sel } };
     }
-    switch (dir) {
-      case 'top':
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        break;
-      case 'bottom':
-        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-        break;
-      case 'up':
-        window.scrollBy({ top: -window.innerHeight * 0.8, behavior: 'smooth' });
-        break;
-      case 'down':
-        window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
-        break;
-      default:
-        return { ok: false, error: 'scrollTo 需 selector 或 direction' };
+    if (dir === 'top') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return { ok: true, data: { direction: dir } };
     }
-    return { ok: true, data: { direction: dir } };
+    if (dir === 'bottom') {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      return { ok: true, data: { direction: dir } };
+    }
+    if (dir === 'up' || dir === 'down') {
+      // 连续滚动(触发懒加载):每步滚动 + 等待,多次后回到顶部等待页面回稳
+      const step = (dir === 'down' ? 1 : -1) * window.innerHeight * 0.8;
+      for (let i = 0; i < iterations; i++) {
+        window.scrollBy({ top: step, behavior: 'smooth' });
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+      return { ok: true, data: { direction: dir, iterations } };
+    }
+    return { ok: false, error: 'scrollTo 需 selector 或 direction(up/down/top/bottom)' };
   },
 
   async waitFor(args: Record<string, unknown>): Promise<ToolResult> {
@@ -207,7 +228,11 @@ export const actions = {
     const timeout = Number(args.timeoutMs ?? 8000);
     const start = Date.now();
     while (Date.now() - start < timeout) {
-      if (document.querySelector(sel)) return { ok: true, data: { found: sel } };
+      const found = document.querySelector<HTMLElement>(sel);
+      if (found) {
+        flashHighlight(found);
+        return { ok: true, data: { found: sel } };
+      }
       await new Promise((r) => setTimeout(r, 200));
     }
     return { ok: false, error: `等待超时(未出现:${sel})` };
@@ -223,6 +248,7 @@ export const actions = {
     const sel = toStr(args.selector);
     const el = document.querySelector<HTMLElement>(sel);
     if (!el) return { ok: false, error: `未找到数据容器:${sel}` };
+    flashHighlight(el);
     const raw = collectTableData(el);
     if (raw.length === 0) return { ok: false, error: `容器内没有表格数据:${sel}` };
     const format = toStr(args.format) || 'csv';

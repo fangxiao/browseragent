@@ -327,12 +327,14 @@ const SENSITIVE_PATTERNS = [
 ## 10. 侧边栏(统一交互式对话,2026-08-14)
 
 - **单一对话流**(取消「对话|智能体」双模式):用户输入目标 → 追加 user 气泡 + agent 消息;agent 运行的思考/步骤/确认/结果全部内嵌在该消息中
-- 场景选择(数据提取/表单/发布/研究)为对话顶部的轻量引导 chips(决定工具子集),默认数据提取;运行中锁定
-- `AgentMessage`(agent 消息):场景标签 + 思考(流式灰字)+ 步骤卡片 + 内嵌安全确认 + 最终结果 + 复制
+- **通用助手模式**(2026-08-14):不再让用户选场景;`general` system 含 4 能力说明 + 问好引导 + 安全规则,AI 自主判断任务;全工具集,敏感操作由确认兜底。细分场景(agents 配置)保留,UI 不再暴露
+- **空状态欢迎介绍卡**:展示"数据提取/表单填写/多平台发布/网页研究"4 能力与示例;输入"你好" → AI 回复介绍,不调工具
+- `AgentMessage`(agent 消息):场景标签(通用助手)+ 思考(流式灰字)+ 步骤卡片 + 内嵌安全确认 + 最终结果 + 复制
 - `AgentStepCard`:`agent-thinking`、`tool-use`(工具名+参数摘要)、`tool-result`(ok/error 摘要)、`agent-done`(summary)
 - **内嵌确认**(对话内卡片,替代全屏弹层):"⚠️ 允许 AI 执行:<动作> [拒绝][允许]" → AGENT:CONFIRM
 - 结果导出:`ExportButtons` —— extractData 结果 / 结果含 Markdown 表格 → CSV 下载(Blob,带 BOM)/ 复制
 - 停止按钮:输入框旁 AGENT:STOP;完成后可继续输入追问(多轮,保持场景)
+- **会话管理**(2026-08-14):🆕 新对话 / 📋 历史列表(切换·删除)/ 对话历史存 `chrome.storage.local`(`utils/agentSessions.ts`,防抖保存),侧边栏重载自动恢复最后会话;运行中锁定切换
 - M1 文档对话 UI(9 能力 chips / ContentPanel / 写回按钮)已移除,统一由 Agent 场景覆盖;`content.ts` 的 EXTRACT/writeback 协议保留(兼容)
 
 ## 11. 测试计划(TDD,新增 tests/)
