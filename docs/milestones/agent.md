@@ -1,6 +1,6 @@
 # 里程碑:v2 通用浏览器智能体(E1-E7)
 
-> 状态:E1-E7 完成(2026-08-14)
+> 状态:E1-E7 完成(2026-08-14);交互统一为对话式(2026-08-14)
 > 上游:`docs/design/agent.md`、`docs/adr/0007-browser-agent-architecture.md`、`docs/adr/0008-thin-loop-replaceable-brain.md`
 > 方向:亮点 = DOM 挖掘 + 信息重组;大脑薄化可替换(ADR-0008)
 > 流程:文档 + 测试驱动,每里程碑测试先行
@@ -112,3 +112,16 @@ pnpm build     # 构建 output/
    - §9 场景表:工具子集补 `findElements`(全场景);注明配置集中在 `agents/index.ts`
    - §8.3:agentLog → AgentStepCard 步骤流;§10:双模式 + ExportButtons
 3. 状态行同步:`requirements.md` v2.0 实现进展 + `milestones/agent.md` E1-E7 完成
+
+## 交互统一(2026-08-14,用户反馈)
+
+**背景**:「对话 | 智能体」双模式割裂,用户要求统一为交互式对话。
+
+**改动**:
+1. `main.tsx` 重写:单一对话流,移除双模式切换;场景 chips 置顶(默认数据提取);输入目标 → user + agent 消息
+2. `AgentMessage.tsx`(新):agent 消息 = 场景标签 + 流式思考 + 步骤卡片 + **内嵌安全确认** + 最终结果 + 复制
+3. `MessageItem.tsx`:`UiMessage` 扩展 `scenario/thinking/steps`,`role: 'agent'` 分支渲染 AgentMessage
+4. 确认交互:全屏 `AgentConfirmModal` → **对话内确认卡片**(`onConfirmAgent` → AGENT:CONFIRM)
+5. M1 文档对话 UI(9 能力 chips / ContentPanel / 写回 / PrivacyConfirm)不再使用;`content.ts` EXTRACT/writeback 协议保留(兼容)
+6. 遗留孤儿文件已删除(2026-08-14,用户确认):`AgentView.tsx`、`AgentConfirmModal.tsx`、`CapabilityChips.tsx`、`ContentPanel.tsx`、`PrivacyConfirm.tsx`
+7. 验证:`pnpm compile` ✅ / `pnpm test` 88 passed ✅ / `pnpm build` ✅(289.42 kB)

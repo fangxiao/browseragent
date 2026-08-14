@@ -184,7 +184,7 @@ export type AgentPortMessage =
   | { type: 'AGENT:STOP' };                                 // 停止当前运行
 ```
 
-> 两条流并存:对话流(文档内容对话,保留)与 Agent 流(通用页面操作)。侧边栏顶部「对话 | 智能体」切换。
+> 2026-08-14 起侧边栏统一为**交互式对话**:输入目标 → Agent 流(AGENT:*)。M1 文档对话流(对话流/AI:START、EXTRACT、写回)协议保留(协议层兼容),UI 不再使用。
 
 ## 6. 工具集(content 实现)—— 核心亮点
 
@@ -324,14 +324,16 @@ const SENSITIVE_PATTERNS = [
 
 > 场景配置集中在 `agents/index.ts`:`{ system, tools, onDone, label, description }`。`buildAgentSystem` 拼接 system + 完成约定;`buildScenarioTools` 由 driver 组装为该场景的 LLM 工具子集;`toLlmTools(filter)` 过滤。
 
-## 10. 侧边栏(Agent 过程展示)
+## 10. 侧边栏(统一交互式对话,2026-08-14)
 
-- 顶部:「对话 | 智能体」双模式切换(对话流保留文档对话;智能体流 = 通用页面操作)
-- 智能体视图:场景选择(数据提取/表单/发布/研究)+ 目标输入框 + 步骤流
-- `AgentStepCard`:`agent-thinking`(灰字)、`tool-use`(工具名+参数摘要)、`tool-result`(ok/error 摘要)、`agent-done`(summary)
-- 敏感确认:`AgentConfirmModal`(展示"AI 想执行:…"+ 工具参数,批准/拒绝)
-- 结果导出:`ExportButtons` —— extractData 结果 / agent-done 含 Markdown 表格 → CSV 下载(Blob,带 BOM)/ 复制
-- 停止按钮:AGENT:STOP
+- **单一对话流**(取消「对话|智能体」双模式):用户输入目标 → 追加 user 气泡 + agent 消息;agent 运行的思考/步骤/确认/结果全部内嵌在该消息中
+- 场景选择(数据提取/表单/发布/研究)为对话顶部的轻量引导 chips(决定工具子集),默认数据提取;运行中锁定
+- `AgentMessage`(agent 消息):场景标签 + 思考(流式灰字)+ 步骤卡片 + 内嵌安全确认 + 最终结果 + 复制
+- `AgentStepCard`:`agent-thinking`、`tool-use`(工具名+参数摘要)、`tool-result`(ok/error 摘要)、`agent-done`(summary)
+- **内嵌确认**(对话内卡片,替代全屏弹层):"⚠️ 允许 AI 执行:<动作> [拒绝][允许]" → AGENT:CONFIRM
+- 结果导出:`ExportButtons` —— extractData 结果 / 结果含 Markdown 表格 → CSV 下载(Blob,带 BOM)/ 复制
+- 停止按钮:输入框旁 AGENT:STOP;完成后可继续输入追问(多轮,保持场景)
+- M1 文档对话 UI(9 能力 chips / ContentPanel / 写回按钮)已移除,统一由 Agent 场景覆盖;`content.ts` 的 EXTRACT/writeback 协议保留(兼容)
 
 ## 11. 测试计划(TDD,新增 tests/)
 
