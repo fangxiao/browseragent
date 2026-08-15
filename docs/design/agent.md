@@ -65,12 +65,12 @@ src/
 │   │   └── executor.ts       # 注册表 + actions 装配为 DomToolExecutor
 │   ├── ai/
 │   │   ├── driver.ts         # AgentDriver 抽象(薄 loop 默认 / 成熟 agent 可替换)
-│   │   ├── agentTypes.ts     # AgentRunPayload / AgentEvent / ScenarioId
+│   │   ├── agentTypes.ts     # AgentRunPayload / AgentEvent
 │   │   ├── agentLoop.ts      # 薄 loop 编排(纯逻辑,注入依赖可测)
 │   │   ├── toolCallParsing.ts# Anthropic/OpenAI tool_use 归一化(纯函数可测)
 │   │   ├── recombine.ts      # 信息重组:mergeTables/mdTableToCsv(纯逻辑可测)
 │   │   └── agents/
-│   │       └── index.ts      # 场景配置集中:system/tools/onDone/label/description
+│   │       └── index.ts      # 智能体通用提示词与工具集构建(buildAgentSystem / buildAgentTools)
 │   ├── domTools/form.ts      # 表单纯函数:findOptionIndex(select 选项定位,可测)
 │   ├── messaging.ts          # 扩展:TOOL:CALL / TOOL:RESULT / AGENT:* / AI:EVENT
 │   └── sidepanelClient.ts    # 扩展:startAgentSession / confirm 响应 / stop
@@ -82,7 +82,7 @@ src/
     ├── domTools/form.test.ts          # select 选项定位
     ├── ai/agentLoop.test.ts           # Loop 编排(注入 fake provider + fake executor)
     ├── ai/toolCallParsing.test.ts     # Anthropic/OpenAI tool_use 解析
-    ├── ai/agents.test.ts              # 场景 system/工具子集约束
+    ├── ai/agents.test.ts              # 通用提示词与工具集约束单测
     └── ai/recombine.test.ts           # 表合并 / md 表格 → CSV
 ```
 
@@ -139,11 +139,8 @@ export type AgentEvent =
 
 ```ts
 // utils/ai/agentTypes.ts
-export type ScenarioId = 'dataExtract' | 'formFill' | 'publish' | 'research';
-
 export interface AgentRunPayload {
-  scenario: ScenarioId;
-  /** 对话历史(不含 system;system 由 background 按场景生成) */
+  /** 对话历史(不含 system;system 由 background 生成) */
   messages: ChatMessage[];
   providerId?: string;
   /** 工具执行目标标签页(由 sidepanel 在启动时携带) */
@@ -313,29 +310,25 @@ const SENSITIVE_PATTERNS = [
 - 用户随时可停止(AGENT:STOP);过程步骤流(AgentStepCard)实时可见
 - 不做跨域回传:所有页面数据只流向用户所选 provider
 
-## 9. 场景 = system + 工具子集(utils/ai/agents/)
+## 9. 智能体提示词与工具调度(utils/ai/agents/)
 
-| 场景 | system 要点 | 工具子集 | 完成条件 |
-|---|---|---|---|
-| S1 `dataExtract` | 识别数据容器 → extractData → 重组 → 导出 CSV | readPage/findElements/extractData/waitFor/getPageInfo/sleep | 输出 Markdown 表格,侧边栏提供下载/复制 |
-| S2 `formFill` | 逐字段填表;填完**停在提交前**等确认 | readPage/findElements/typeInto/clickElement/scrollTo/waitFor/sleep | 提交前等用户确认 |
-| S3 `publish` | 多平台内容投放;每平台发布前确认 | readPage/findElements/typeInto/clickElement/navigate/waitFor/sleep | 每平台发布前确认 |
-| S4 `research` | 多页资料 → 总结/对比/要点 | readPage/findElements/getPageInfo/navigate/waitFor/sleep | 输出结构化总结(对比表可导出) |
+统一使用通用智能体 System 提示词 (`buildAgentSystem`) 与全量默认可用工具集 (`buildAgentTools`)，无需预设僵化的细分场景分类。
 
-> 场景配置集中在 `agents/index.ts`:`{ system, tools, onDone, label, description }`。`buildAgentSystem` 拼接 system + 完成约定;`buildScenarioTools` 由 driver 组装为该场景的 LLM 工具子集;`toLlmTools(filter)` 过滤。
+- **System 提示词规范**：明确告知 AI 观察（readPage / findElements）、交互（clickElement / typeInto / scrollTo / waitFor / sleep）、数据提取（extractData / Markdown 表格输出）等全套能力。
+- **安全与合规约束**：敏感动作停留在提交/确认前、处理懒加载滚动策略、自然语言友好沟通、严禁虚构未提供的信息。
+- **工具集构建**：由 `buildAgentTools()` 导出默认工具集（排除高危的 `evaluate`），并通过 `toLlmTools` 转换给 Provider 进行 Tool Calling。
 
-## 10. 侧边栏(统一交互式对话,2026-08-14)
+## 10. 侧边栏(统一交互式对话)
 
-- **单一对话流**(取消「对话|智能体」双模式):用户输入目标 → 追加 user 气泡 + agent 消息;agent 运行的思考/步骤/确认/结果全部内嵌在该消息中
-- **通用助手模式**(2026-08-14):不再让用户选场景;`general` system 含 4 能力说明 + 问好引导 + 安全规则,AI 自主判断任务;全工具集,敏感操作由确认兜底。细分场景(agents 配置)保留,UI 不再暴露
-- **空状态欢迎介绍卡**:展示"数据提取/表单填写/多平台发布/网页研究"4 能力与示例;输入"你好" → AI 回复介绍,不调工具
-- `AgentMessage`(agent 消息):场景标签(通用助手)+ 思考(流式灰字)+ 步骤卡片 + 内嵌安全确认 + 最终结果 + 复制
-- `AgentStepCard`:`agent-thinking`、`tool-use`(工具名+参数摘要)、`tool-result`(ok/error 摘要)、`agent-done`(summary)
-- **内嵌确认**(对话内卡片,替代全屏弹层):"⚠️ 允许 AI 执行:<动作> [拒绝][允许]" → AGENT:CONFIRM
-- 结果导出:`ExportButtons` —— extractData 结果 / 结果含 Markdown 表格 → CSV 下载(Blob,带 BOM)/ 复制
-- 停止按钮:输入框旁 AGENT:STOP;完成后可继续输入追问(多轮,保持场景)
-- **会话管理**(2026-08-14):🆕 新对话 / 📋 历史列表(切换·删除)/ 对话历史存 `chrome.storage.local`(`utils/agentSessions.ts`,防抖保存),侧边栏重载自动恢复最后会话;运行中锁定切换
-- M1 文档对话 UI(9 能力 chips / ContentPanel / 写回按钮)已移除,统一由 Agent 场景覆盖;`content.ts` 的 EXTRACT/writeback 协议保留(兼容)
+- **单一对话流**：用户输入自然语言目标 → 追加 user 气泡 + agent 消息；agent 运行的思考、步骤、确认、结果全部内嵌在该消息中。
+- **通用助手模式**：AI 自主判断任务类型，全工具集调度，敏感操作由安全策略自动拦截并弹出确认。
+- **空状态欢迎卡**：介绍通用操作能力与提示示例；输入问好时友好回应，不盲目调用工具。
+- **AgentMessage**：智能体标识 + 思考过程（流式灰字） + 过程步骤卡片 + 内嵌安全确认 + 最终 Markdown 渲染结果 + 复制。
+- **AgentStepCard**：`agent-thinking`、`tool-use`（工具名 + 参数摘要）、`tool-result`（ok/error 摘要）、`agent-done`（summary）。
+- **内嵌确认**：对话内卡片 "⚠️ 允许 AI 执行:<动作> [拒绝][允许]" → AGENT:CONFIRM。
+- **结果导出**：`ExportButtons` —— `extractData` 结果或最终结果含 Markdown 表格时，自动提供 CSV 下载（Blob 带 BOM）与一键复制。
+- **停止按钮**：运行中可随时通过 AGENT:STOP 终止运行。
+- **会话持久化**：支持新建对话、本地历史列表切换与删除（存储于 `chrome.storage.local`，防抖保存）。
 
 ## 11. 测试计划(TDD,新增 tests/)
 

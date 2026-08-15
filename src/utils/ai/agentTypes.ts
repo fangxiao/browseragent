@@ -2,9 +2,6 @@
 import type { ToolCall, ToolResult } from '../domTools/types';
 import type { ChatMessage } from './provider/types';
 
-/** general = 通用助手(默认,AI 自主判断任务,见 agents/index.ts);其余为细分场景(UI 不再暴露) */
-export type ScenarioId = 'general' | 'dataExtract' | 'formFill' | 'publish' | 'research';
-
 /** background → sidepanel 的 Agent 事件流 */
 export type AgentEvent =
   | { type: 'agent-thinking'; text: string } // AI 推理文本(增量)
@@ -19,10 +16,11 @@ export type AgentEvent =
 
 /** sidepanel → background 的 Agent 运行请求 */
 export interface AgentRunPayload {
-  scenario: ScenarioId;
-  /** 对话历史(不含 system;system 由 background 按场景生成) */
+  /** 对话历史(不含 system;system 由 background 生成) */
   messages: ChatMessage[];
   providerId?: string;
   /** 工具执行目标标签页(由 sidepanel 启动时携带) */
   tabId: number;
+  /** 当前激活标签页的实时标题与 URL 上下文 */
+  currentTabInfo?: string;
 }

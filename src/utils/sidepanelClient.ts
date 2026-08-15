@@ -23,7 +23,6 @@ export async function writebackToDoc(
   return res.message;
 }
 
-export { getSettings, saveSettings };
 export type { AiSettings };
 
 export async function getActiveTabId(): Promise<number | null> {

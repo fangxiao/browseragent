@@ -14,9 +14,9 @@
 - **content** 实现 `DomToolExecutor`:DOM 操作必须在页面上下文;与 background 之间只传 JSON(selector + 结构化结果)
 - 理由:① 工具执行与规划解耦,便于单测;② content 不持有 provider 凭证;③ 一个会话固定操作用户活动标签页
 
-### 2. 场景 = system 提示词 + 工具子集
-- 引擎复用,新增场景只加 `utils/ai/agents/*`(dataExtract/formFill/publish/research)
-- 每场景显式声明允许的工具清单,LLM 只能调用白名单内工具
+### 2. 统一通用智能体架构
+- 移除未经验证的预设四大细分场景，统一为单一通用智能体
+- System 提示词全面指导页面观察、交互、填表、数据提取与安全守则，全量工具集（除高危 evaluate 外）由 AI 视任务动态规划调度
 
 ### 3. 安全:敏感操作强制确认
 - `safety.ts` 纯函数判定:点击命中"提交/发布/删除/支付"等模式、typeInto 密码框、navigate 跨域 → 挂起等用户确认

@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS: AiSettings = {
   confirmOnSend: true,
   rememberSession: true,
   trustedSession: false,
+  debugMode: false,
 };
 
 export async function getSettings(): Promise<AiSettings> {

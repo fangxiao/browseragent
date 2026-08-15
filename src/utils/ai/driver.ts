@@ -4,7 +4,8 @@ import type { ToolCall, ToolResult } from '../domTools/types';
 import type { ChatMessage, StreamEvent } from './provider/types';
 import { runAgentLoop } from './agentLoop';
 import type { AgentEvent, AgentRunPayload } from './agentTypes';
-import { buildAgentSystem, buildScenarioTools } from './agents';
+import { buildAgentTools } from './agents';
+import { getEffectiveSystemPrompt } from './remoteConfig';
 import { toLlmTools } from '../domTools/toolRegistry';
 
 export interface AgentHooks {
@@ -34,10 +35,10 @@ export function createThinLoopDriver(deps: {
 }): AgentDriver {
   return {
     async run(req, hooks) {
-      const system = buildAgentSystem(req.scenario);
-      const initial: ChatMessage[] = [{ role: 'system', content: system }, ...req.messages];
-      // 场景工具子集(设计 §9):只暴露该场景允许的工具
-      const tools = toLlmTools(buildScenarioTools(req.scenario));
+      const system = await getEffectiveSystemPrompt();
+      const tabContext = req.currentTabInfo ?? '';
+      const initial: ChatMessage[] = [{ role: 'system', content: system + tabContext }, ...req.messages];
+      const tools = toLlmTools(buildAgentTools());
       await runAgentLoop({
         streamTurn: async (messages) => {
           // 每轮带 system + 历史 + 回填的工具结果

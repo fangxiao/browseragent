@@ -29,4 +29,12 @@ describe('mdToHtml', () => {
     expect(html).toContain('<a href="https://x.com">链接</a>');
     expect(mdToHtml('<script>')).toContain('&lt;script&gt;');
   });
+
+  it('渲染可交互的 DOM 溯源引用微型徽章 [1](cite:anchor-1)', () => {
+    const html = mdToHtml('核心结论是吞吐量提升了 300% [📍 1](cite:anchor-3)。另外延迟降低了 50% [cite:anchor-5]。');
+    expect(html).toContain('data-anchor="anchor-3"');
+    expect(html).toContain('data-anchor="anchor-5"');
+    expect(html).toContain('cite-anchor-badge');
+    expect(html).toContain('📍 1');
+  });
 });

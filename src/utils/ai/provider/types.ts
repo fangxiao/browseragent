@@ -34,6 +34,8 @@ export interface AiSettings {
   rememberSession: boolean;
   /** 本会话已确认信任(隐私 FR-5.1) */
   trustedSession: boolean;
+  /** 调试模式:展开过程步骤与详细工具调用日志 */
+  debugMode?: boolean;
 }
 
 export interface ChatMessage {

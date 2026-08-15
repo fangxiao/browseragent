@@ -7,6 +7,7 @@ import { actions } from './actions';
 
 const EXEC_MAP: Record<string, (args: Record<string, unknown>) => Promise<ToolResult>> = {
   getPageInfo: actions.getPageInfo,
+  getPagePerformance: actions.getPagePerformance,
   readPage: actions.readPage,
   findElements: actions.findElements,
   clickElement: actions.clickElement,
@@ -16,6 +17,9 @@ const EXEC_MAP: Record<string, (args: Record<string, unknown>) => Promise<ToolRe
   sleep: actions.sleep,
   extractData: actions.extractData,
   navigate: actions.navigate,
+  getArticleOutline: actions.getArticleOutline,
+  highlightAndScrollTo: actions.highlightAndScrollTo,
+  writeWechatDraft: actions.writeWechatDraft,
   evaluate: actions.evaluate,
 };
 

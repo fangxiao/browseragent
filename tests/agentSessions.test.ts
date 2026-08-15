@@ -19,7 +19,7 @@ describe('agentSessions(会话管理纯逻辑)', () => {
   it('createSession:重置 streaming,保存过程字段', () => {
     const msg: UiMessage[] = [
       user('提取表格'),
-      { id: 'a1', role: 'agent', scenario: 'dataExtract', streaming: true, thinking: '先读页', steps: [] },
+      { id: 'a1', role: 'agent', streaming: true, thinking: '先读页', steps: [] },
     ];
     const s = createSession('s1', msg);
     expect(s.title).toBe('提取表格');

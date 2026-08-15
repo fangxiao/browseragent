@@ -41,9 +41,15 @@ function summarizeResult(call: ToolCall, result: ToolResult): string {
   const d = result.data as Record<string, unknown>;
   const s = (v: unknown): string => (v != null ? String(v) : '');
   switch (call.name) {
+    case 'listTabs':
+      return `已发现 ${s(d.count) || (Array.isArray(d.tabs) ? d.tabs.length : 0)} 个标签页`;
     case 'readPage':
     case 'getPageInfo':
       return `页面:${s(d.title)}`;
+    case 'getPagePerformance': {
+      const fcp = d.fcpMs ? `FCP: ${s(d.fcpMs)}ms, ` : '';
+      return `加载耗时: ${s(d.loadMs)}ms (${fcp}TTFB: ${s(d.ttfbMs)}ms, ${s(d.resourceCount)} 个资源, ${s(d.transferSizeKb)}KB)`;
+    }
     case 'findElements':
       return `找到 ${s(d.count) || 0} 个元素`;
     case 'extractData': {
@@ -68,12 +74,22 @@ function summarizeResult(call: ToolCall, result: ToolResult): string {
     case 'evaluate':
       return '代码已执行';
     default:
+      if (typeof d === 'object' && d !== null) {
+        try {
+          const json = JSON.stringify(d);
+          return json.length > 90 ? json.slice(0, 90) + '…' : json;
+        } catch {
+          return '完成';
+        }
+      }
       return s(d).length > 90 ? s(d).slice(0, 90) + '…' : s(d);
   }
 }
 
 const TOOL_LABELS: Record<string, string> = {
   getPageInfo: '读取页面信息',
+  getPagePerformance: '分析页面性能',
+  listTabs: '扫描标签页',
   readPage: '读取页面元素',
   findElements: '查找元素',
   clickElement: '点击',
@@ -86,7 +102,15 @@ const TOOL_LABELS: Record<string, string> = {
   evaluate: '执行脚本',
 };
 
-export function AgentStepCard({ event }: { event: AgentEvent }) {
+import { TabSelector, type TabItem } from './TabSelector';
+
+export function AgentStepCard({
+  event,
+  onSelectTabs,
+}: {
+  event: AgentEvent;
+  onSelectTabs?: (tabs: TabItem[]) => void;
+}) {
   // 共享行容器样式
   const row = 'flex items-start gap-1.5 px-2 py-1 text-xs';
 
@@ -114,15 +138,23 @@ export function AgentStepCard({ event }: { event: AgentEvent }) {
 
     case 'tool-result': {
       const csv = event.call.name === 'extractData' ? extractCsvFromData(event.result.data) : null;
+      const tabData = event.call.name === 'listTabs' && event.result.ok ? (event.result.data as { tabs?: TabItem[] }) : null;
+      const tabs = Array.isArray(tabData?.tabs) ? tabData.tabs : null;
+
       return (
-        <div
-          className={`${row} ${
-            event.result.ok ? 'border-green-100 bg-green-50/60 text-green-800' : 'border-red-100 bg-red-50/60 text-red-700'
-          } rounded`}
-        >
-          <span>{event.result.ok ? '✅' : '⚠️'}</span>
-          <span className="min-w-0 flex-1 break-all">{summarizeResult(event.call, event.result)}</span>
-          {event.result.ok && csv && <ExportButtons csv={csv} filename="extracted.csv" />}
+        <div className="space-y-1">
+          <div
+            className={`${row} ${
+              event.result.ok ? 'border-green-100 bg-green-50/60 text-green-800' : 'border-red-100 bg-red-50/60 text-red-700'
+            } rounded`}
+          >
+            <span>{event.result.ok ? '✅' : '⚠️'}</span>
+            <span className="min-w-0 flex-1 break-all">{summarizeResult(event.call, event.result)}</span>
+            {event.result.ok && csv && <ExportButtons csv={csv} filename="extracted.csv" />}
+          </div>
+          {tabs && tabs.length > 0 && onSelectTabs && (
+            <TabSelector tabs={tabs} onConfirm={onSelectTabs} />
+          )}
         </div>
       );
     }

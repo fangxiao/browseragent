@@ -22,13 +22,34 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
     },
   ),
   define(
+    'getPagePerformance',
+    '获取页面的真实加载性能与网络耗时深度指标(毫秒级:DNS解析/TCP建连/TTFB首字节/FCP首次绘制/DOM就绪/完全加载/总资源数/体积、以及 Top 3 慢请求和 Top 3 大文件具体清单)。用于性能诊断、测速对比、SEO分析。支持 tabId 指定目标标签页。',
+    {
+      type: 'object',
+      properties: {
+        tabId: { type: 'number', description: '可选,指定要获取性能指标的目标标签页 ID(不传则读取当前标签页)' },
+      },
+    },
+  ),
+  define(
+    'listTabs',
+    '获取当前浏览器窗口中打开的所有可用标签页列表(含 tabId/标题/URL)。用于多标签页横向对比、多网页跨页协同。',
+    {
+      type: 'object',
+      properties: {
+        currentWindow: { type: 'boolean', description: '可选,是否仅当前窗口,默认 true' },
+      },
+    },
+  ),
+  define(
     'readPage',
-    '读取当前页面可交互元素与文本摘要,用于观察页面。可传 selector 限定范围、textLimit 加大文本长度(懒加载长内容时用)。',
+    '读取当前页面可交互元素与文本摘要,用于观察页面。可传 selector 限定范围、textLimit 加大文本长度、tabId 指定非当前标签页。',
     {
       type: 'object',
       properties: {
         selector: { type: 'string', description: '可选,限定读取范围(如 main、#list)' },
         textLimit: { type: 'number', description: '可选,文本摘要最大字符数,默认 2000,最大 20000' },
+        tabId: { type: 'number', description: '可选,指定要读取的目标标签页 ID(不传则读取当前激活标签页)' },
       },
     },
   ),
@@ -118,6 +139,7 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
           items: { type: 'string' },
           description: '可选,只保留这些列(按表头列名,需有表头)',
         },
+        tabId: { type: 'number', description: '可选,指定要提取的目标标签页 ID(不传则提取当前激活标签页)' },
       },
     },
     ['selector'],
@@ -133,6 +155,50 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
       },
     },
     ['url'],
+  ),
+  define(
+    'getArticleOutline',
+    '智能提取长文/技术文档/文章页面的多级目录大纲树(H1~H4)、章节要点与段落锚点(anchorId)。用于长文速读、沉浸式阅读伴侣和精准论据溯源。',
+    {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '可选,限定正文容器选择器(如 article, main, .markdown-body)' },
+        tabId: { type: 'number', description: '可选,指定目标标签页 ID(不传则读取当前标签页)' },
+      },
+    },
+  ),
+  define(
+    'highlightAndScrollTo',
+    '平滑滚动到网页中指定的段落或元素位置,并施加 2.5 秒柔和脉冲光晕高亮。用于长文论据精准溯源、段落定位、视觉引导。',
+    {
+      type: 'object',
+      properties: {
+        anchorId: { type: 'string', description: '可选,段落锚点 ID(由 getArticleOutline 返回,如 anchor-3)' },
+        selector: { type: 'string', description: '可选,CSS 选择器定位目标元素' },
+        textSnippet: { type: 'string', description: '可选,要匹配并高亮的原文关键词或特征语句' },
+        tabId: { type: 'number', description: '可选,指定目标标签页 ID(不传则操作当前激活标签页)' },
+      },
+    },
+  ),
+  define(
+    'writeWechatDraft',
+    '将内容经过微信专属精美排版(支持科技蓝/微信绿/极简黑/典雅紫等主题,含Mac终端代码块、双色标题、优雅引用框)后,自动写入微信公众平台(mp.weixin.qq.com)的图文草稿箱(填入标题、作者、120字摘要与富文本正文)。',
+    {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '可选,微信公众号图文标题(最大64字)' },
+        author: { type: 'string', description: '可选,文章作者(最大16字)' },
+        digest: { type: 'string', description: '可选,文章摘要引言(最大120字)' },
+        contentMarkdown: { type: 'string', description: '文章正文 Markdown 源码(自动执行微信内联美化排版)' },
+        contentHtml: { type: 'string', description: '可选,已排版好的 HTML 富文本' },
+        theme: {
+          type: 'string',
+          enum: ['tech-blue', 'wechat-green', 'minimal-black', 'elegant-purple', 'warm-amber'],
+          description: '可选,排版主题,默认 tech-blue(科技商务蓝)',
+        },
+        tabId: { type: 'number', description: '可选,目标微信公众平台标签页 ID(不传则写入当前页面)' },
+      },
+    },
   ),
   define(
     'evaluate',

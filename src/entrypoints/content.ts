@@ -6,6 +6,7 @@
 import { isEditableEditor, extractDocId } from '@/utils/pageExtract/editor/detect';
 import { extractDocContent } from '@/utils/pageExtract/editor/extract';
 import { createDomExecutor } from '@/utils/domTools/executor';
+import { initSelectionPill } from '@/utils/domTools/selectionPill';
 import type { ExtractRequest, ExtractResponse, WritebackRequest, WritebackResponse, ToolRequest, ToolResponse } from '@/utils/messaging';
 
 declare global {
@@ -55,6 +56,13 @@ export default defineContentScript({
   matches: ['<all_urls>'],
   main() {
     console.log('[ai-agent] content script injected; url:', location.href);
+
+    // 初始化网页划词即问与局部透镜悬浮条
+    try {
+      initSelectionPill();
+    } catch {
+      /* 忽略异常 */
+    }
 
     // v2 通用 DOM 工具执行器(evaluate 默认禁用;后续由 options 控制)
     const executor = createDomExecutor({ allowEvaluate: false });
