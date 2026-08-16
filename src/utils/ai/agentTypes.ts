@@ -23,4 +23,6 @@ export interface AgentRunPayload {
   tabId: number;
   /** 当前激活标签页的实时标题与 URL 上下文 */
   currentTabInfo?: string;
+  /** 当前激活标签页的完整 URL (用于插件精准匹配与动态提示词装配) */
+  currentTabUrl?: string;
 }

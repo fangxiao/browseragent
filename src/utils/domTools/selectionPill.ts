@@ -1,25 +1,38 @@
 // 网页划词即问与局部透镜悬浮工具条 (Floating Selection Quick-Action Pill)
+// 采用 Shadow DOM 100% 隔离宿主网页样式，确保在任何网页中均可稳定渲染并响应交互。
 
-const PILL_ID = 'ai-agent-floating-selection-pill';
+const PILL_CONTAINER_ID = 'ai-agent-floating-selection-pill-container';
 
 /** 初始化网页划词监听器 */
 export function initSelectionPill(): void {
-  if (typeof document === 'undefined') return;
+  if (typeof document === 'undefined' || typeof window === 'undefined') return;
 
-  let pillEl: HTMLElement | null = null;
+  // 避免在同一个页面重复注册多次
+  if (document.getElementById(PILL_CONTAINER_ID)) {
+    return;
+  }
+
+  let hostEl: HTMLElement | null = null;
+  let shadowRoot: ShadowRoot | null = null;
   let activeSelectedText = '';
+  let checkDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   const removePill = () => {
-    if (pillEl && pillEl.parentNode) {
-      pillEl.parentNode.removeChild(pillEl);
-      pillEl = null;
+    if (hostEl && hostEl.parentNode) {
+      hostEl.parentNode.removeChild(hostEl);
     }
+    hostEl = null;
+    shadowRoot = null;
     activeSelectedText = '';
   };
 
-  const handleAction = async (actionType: 'explain' | 'data' | 'translate' | 'ask') => {
+  const handleAction = async (actionType: 'explain' | 'data' | 'translate' | 'ask', btnEl?: HTMLElement) => {
     if (!activeSelectedText) return;
     const textSnippet = activeSelectedText.slice(0, 3000);
+
+    if (btnEl) {
+      btnEl.textContent = '⏳ 已发送...';
+    }
 
     let prompt = '';
     switch (actionType) {
@@ -48,97 +61,149 @@ export function initSelectionPill(): void {
       /* 忽略发送异常 */
     }
 
-    removePill();
+    setTimeout(removePill, 120);
   };
 
-  const createPill = (x: number, y: number, text: string) => {
+  const createPill = (rect: DOMRect, text: string) => {
     removePill();
     activeSelectedText = text;
 
-    const container = document.createElement('div');
-    container.id = PILL_ID;
-    container.style.cssText = `
-      position: fixed;
-      left: ${Math.max(10, Math.min(window.innerWidth - 280, x))}px;
-      top: ${Math.max(10, y - 42)}px;
-      z-index: 2147483647;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 4px 6px;
-      background: rgba(17, 24, 39, 0.92);
-      backdrop-filter: blur(8px);
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      border-radius: 9999px;
-      box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.35), 0 2px 6px -1px rgba(0, 0, 0, 0.2);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      font-size: 11px;
-      color: #f9fafb;
-      user-select: none;
-      animation: aiAgentPillFadeIn 0.15s ease-out;
-      transition: all 0.15s ease;
-    `;
+    const host = document.createElement('div');
+    host.id = PILL_CONTAINER_ID;
+    const shadow = host.attachShadow({ mode: 'open' });
 
-    // 动态注入轻量动画样式
-    if (!document.getElementById('ai-agent-pill-style')) {
-      const style = document.createElement('style');
-      style.id = 'ai-agent-pill-style';
-      style.textContent = `
-        @keyframes aiAgentPillFadeIn {
-          from { opacity: 0; transform: translateY(4px) scale(0.96); }
+    // 计算最佳呈现坐标(自适应顶部/底部边界)
+    const pillWidth = 320;
+    const pillHeight = 36;
+    let top = rect.top - pillHeight - 8;
+    if (top < 10) {
+      // 距离视窗顶部太近时,呈现在选区下方
+      top = rect.bottom + 8;
+    }
+    let left = rect.left + rect.width / 2 - pillWidth / 2;
+    if (left < 10) left = 10;
+    if (left + pillWidth > window.innerWidth - 10) {
+      left = Math.max(10, window.innerWidth - pillWidth - 10);
+    }
+
+    shadow.innerHTML = `
+      <style>
+        :host {
+          all: initial;
+          position: fixed;
+          left: ${left}px;
+          top: ${top}px;
+          z-index: 2147483647;
+          pointer-events: auto;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        }
+        .pill-wrapper {
+          display: inline-flex;
+          align-items: center;
+          gap: 3px;
+          padding: 4px 6px;
+          background: rgba(17, 24, 39, 0.95);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          border-radius: 9999px;
+          box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.45), 0 4px 10px -2px rgba(0, 0, 0, 0.25);
+          box-sizing: border-box;
+          animation: pillSlideIn 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+          user-select: none;
+        }
+        @keyframes pillSlideIn {
+          from { opacity: 0; transform: translateY(5px) scale(0.96); }
           to { opacity: 1; transform: translateY(0) scale(1); }
         }
-        .ai-pill-btn {
+        .pill-brand {
           display: inline-flex;
           align-items: center;
           gap: 2px;
-          padding: 2px 7px;
+          padding: 0 4px 0 2px;
+          font-size: 11px;
+          font-weight: 700;
+          color: #60a5fa;
+        }
+        .pill-btn {
+          all: unset;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 2px;
+          padding: 3px 8px;
           border-radius: 9999px;
           background: transparent;
           color: #f3f4f6;
-          border: none;
           cursor: pointer;
           font-size: 11px;
           font-weight: 500;
-          transition: background 0.12s, color 0.12s;
+          line-height: 1.2;
           white-space: nowrap;
+          box-sizing: border-box;
+          transition: background 0.12s, color 0.12s, transform 0.1s;
         }
-        .ai-pill-btn:hover {
+        .pill-btn:hover {
           background: rgba(255, 255, 255, 0.2);
           color: #ffffff;
         }
-        .ai-pill-btn:active {
-          transform: scale(0.96);
+        .pill-btn:active {
+          transform: scale(0.95);
         }
-      `;
-      document.head.appendChild(style);
-    }
+        .pill-btn-explain {
+          background: rgba(59, 130, 246, 0.25);
+          color: #93c5fd;
+        }
+        .pill-btn-explain:hover {
+          background: rgba(59, 130, 246, 0.45);
+          color: #ffffff;
+        }
+        .pill-divider {
+          width: 1px;
+          height: 12px;
+          background: rgba(255, 255, 255, 0.18);
+          margin: 0 1px;
+        }
+      </style>
+      <div class="pill-wrapper" id="pill-wrap">
+        <span class="pill-brand">✨</span>
+        <button class="pill-btn pill-btn-explain" id="btn-explain" title="深度解读此段逻辑">💡 解读</button>
+        <button class="pill-btn" id="btn-data" title="将此段数据整理成表格">📊 提数据</button>
+        <button class="pill-btn" id="btn-translate" title="通俗意译与白话总结">🌐 意译</button>
+        <div class="pill-divider"></div>
+        <button class="pill-btn" id="btn-ask" title="针对此段在侧边栏提问">🔍 提问</button>
+      </div>
+    `;
 
-    const actions = [
-      { label: '💡 解读', type: 'explain' as const, title: '深度解读此段落逻辑' },
-      { label: '📊 提数据', type: 'data' as const, title: '将此段数据整理成表格' },
-      { label: '🌐 意译', type: 'translate' as const, title: '通俗意译与白话总结' },
-      { label: '🔍 提问', type: 'ask' as const, title: '针对此段在侧边栏提问' },
-    ];
+    // 绑定点击事件
+    const btnExplain = shadow.getElementById('btn-explain');
+    const btnData = shadow.getElementById('btn-data');
+    const btnTranslate = shadow.getElementById('btn-translate');
+    const btnAsk = shadow.getElementById('btn-ask');
 
-    for (const act of actions) {
-      const btn = document.createElement('button');
-      btn.className = 'ai-pill-btn';
-      btn.textContent = act.label;
-      btn.title = act.title;
-      btn.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        void handleAction(act.type);
-      };
-      container.appendChild(btn);
-    }
+    btnExplain?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void handleAction('explain', btnExplain);
+    });
+    btnData?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void handleAction('data', btnData);
+    });
+    btnTranslate?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void handleAction('translate', btnTranslate);
+    });
+    btnAsk?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void handleAction('ask', btnAsk);
+    });
 
-    document.body.appendChild(container);
-    pillEl = container;
+    document.documentElement.appendChild(host);
+    hostEl = host;
+    shadowRoot = shadow;
   };
 
-  const handleSelectionChange = () => {
+  const checkSelection = () => {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) {
       removePill();
@@ -151,31 +216,53 @@ export function initSelectionPill(): void {
       return;
     }
 
-    // 若选区在 input/textarea/可编辑区内部,不弹悬浮条
+    // 排除可编辑输入框/文本域内划词
     const anchorNode = sel.anchorNode;
     const parentEl = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement;
-    if (parentEl?.closest('input, textarea, [contenteditable="true"], #' + PILL_ID)) {
+    if (parentEl?.closest('input, textarea, [contenteditable="true"]')) {
       return;
     }
 
     if (sel.rangeCount > 0) {
-      const range = sel.getRangeAt(0);
-      const rect = range.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) {
-        createPill(rect.left + rect.width / 2 - 120, rect.top, text);
+      try {
+        const range = sel.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+          createPill(rect, text);
+        }
+      } catch {
+        /* 忽略异常 */
       }
     }
   };
 
-  document.addEventListener('mouseup', (e) => {
-    // 若点击在 pill 内部不处理
-    if ((e.target as HTMLElement)?.closest?.('#' + PILL_ID)) return;
-    setTimeout(handleSelectionChange, 50);
-  });
+  const onSelectionChangeOrMouseUp = (e?: Event) => {
+    // 若事件发生在 pill 内部(通过 composedPath 检查 shadow dom),不予处理
+    if (e && e.composedPath().some((el) => (el as HTMLElement)?.id === PILL_CONTAINER_ID)) {
+      return;
+    }
 
-  document.addEventListener('mousedown', (e) => {
-    if (!(e.target as HTMLElement)?.closest?.('#' + PILL_ID)) {
-      removePill();
+    if (checkDebounceTimer) clearTimeout(checkDebounceTimer);
+    checkDebounceTimer = setTimeout(checkSelection, 50);
+  };
+
+  // 监听 mouseup, touchend, pointerup 与 selectionchange
+  document.addEventListener('mouseup', onSelectionChangeOrMouseUp, { passive: true });
+  document.addEventListener('touchend', onSelectionChangeOrMouseUp, { passive: true });
+  document.addEventListener('keyup', (e) => {
+    if (['Shift', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+      onSelectionChangeOrMouseUp();
     }
   });
+
+  // 点击网页其他空白处时自动隐藏
+  document.addEventListener(
+    'mousedown',
+    (e) => {
+      if (!e.composedPath().some((el) => (el as HTMLElement)?.id === PILL_CONTAINER_ID)) {
+        removePill();
+      }
+    },
+    { passive: true },
+  );
 }

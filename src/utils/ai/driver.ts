@@ -35,10 +35,10 @@ export function createThinLoopDriver(deps: {
 }): AgentDriver {
   return {
     async run(req, hooks) {
-      const system = await getEffectiveSystemPrompt();
+      const system = await getEffectiveSystemPrompt(req.currentTabUrl);
       const tabContext = req.currentTabInfo ?? '';
       const initial: ChatMessage[] = [{ role: 'system', content: system + tabContext }, ...req.messages];
-      const tools = toLlmTools(buildAgentTools());
+      const tools = toLlmTools(buildAgentTools(req.currentTabUrl));
       await runAgentLoop({
         streamTurn: async (messages) => {
           // 每轮带 system + 历史 + 回填的工具结果

@@ -103,9 +103,9 @@ export async function fetchAndSyncCloudConfig(
  * 2. 其次使用内置 Prompt + 云端追加规则;
  * 3. 离线或网络故障时 100% 优雅回退到内置原生 Prompt。
  */
-export async function getEffectiveSystemPrompt(): Promise<string> {
+export async function getEffectiveSystemPrompt(currentUrl?: string): Promise<string> {
   const cached = await getCachedCloudConfig();
-  const base = getBuiltinSystemPrompt();
+  const base = getBuiltinSystemPrompt(currentUrl);
 
   if (!cached) return base;
 

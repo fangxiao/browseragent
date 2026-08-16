@@ -8,7 +8,7 @@ export interface TabItem {
   active?: boolean;
 }
 
-export type ComparisonMode = 'content' | 'performance' | 'data' | 'dialectic' | 'all';
+export type ComparisonMode = 'content' | 'performance' | 'data' | 'dialectic' | 'feishu' | 'all';
 
 interface Props {
   tabs: TabItem[];
@@ -46,6 +46,8 @@ export function TabSelector({ tabs, onConfirm }: Props) {
 
   const getModeLabel = (m: ComparisonMode) => {
     switch (m) {
+      case 'feishu':
+        return '📘 研报输出到飞书文档';
       case 'dialectic':
         return '⚔️ 观点共识与分歧透镜';
       case 'performance':
@@ -182,6 +184,14 @@ export function TabSelector({ tabs, onConfirm }: Props) {
           >
             <span>📊</span>
             <span>提取数据对比</span>
+          </button>
+          <button
+            disabled={selectedIds.size === 0}
+            onClick={() => handleConfirm('all')}
+            className="col-span-2 flex items-center justify-center gap-1 rounded border border-sky-300 bg-sky-50/90 px-2 py-1.5 text-[11px] font-semibold text-sky-800 hover:bg-sky-100 active:scale-[0.98] disabled:opacity-40 transition-all cursor-pointer disabled:cursor-not-allowed"
+          >
+            <span>🔍</span>
+            <span>全方位综合深度对比与研报生成</span>
           </button>
         </div>
       </div>

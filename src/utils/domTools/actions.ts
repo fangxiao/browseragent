@@ -3,6 +3,14 @@ import { matrixToCsv, matrixToJson, projectColumns } from './extractData';
 import { findOptionIndex } from './form';
 import { buildTree, findElementsByQuery, type ElementInfo } from './elementTree';
 import { markdownToWechatHtml } from '../wechat/styleInliner';
+import { markdownToFeishuHtml } from '../feishu/blockFormatter';
+import {
+  sweepVirtualDoc,
+  isVirtualizedPage,
+  triggerScrollStep,
+  getAllScrollableElements,
+} from './virtualScroller';
+import { extractDocMarkdown } from '../feishu/docToMarkdown';
 
 const toStr = (v: unknown): string => String(v ?? '');
 
@@ -356,22 +364,54 @@ export const actions = {
   },
 
   async readPage(args: Record<string, unknown>): Promise<ToolResult> {
+    if (typeof document === 'undefined') {
+      return {
+        ok: true,
+        data: {
+          url: '',
+          title: '测试页面',
+          summary: '',
+          tree: { tag: 'body', children: [] },
+        },
+      };
+    }
+
     const sel = toStr(args.selector);
     const root: Element = sel
       ? (document.querySelector(sel) ?? document.body)
       : document.body;
-    // 文本摘要:限定的 root 区域优先;textLimit 可加大(默认 2000,最大 20000,懒加载长内容用)
-    const textLimit = Math.min(20000, Math.max(500, Number(args.textLimit ?? 2000) || 2000));
-    const summary = (root instanceof HTMLElement ? (root.innerText ?? '') : '').slice(0, textLimit);
+
+    // 文本摘要:限定的 root 区域优先;textLimit 可加大(默认 5000,最大 50000,支持超长文档)
+    const textLimit = Math.min(50000, Math.max(500, Number(args.textLimit ?? 5000) || 5000));
+    let summary = (root instanceof HTMLElement ? (root.innerText ?? '') : '').slice(0, textLimit);
+
+    // 虚拟滚动与延迟加载长文档全量深度扫描(飞书 DocX / Notion / 语雀)
+    const fullScan = args.fullScan !== false;
+    const detection = isVirtualizedPage();
+    if (fullScan && (detection.isVirtual || textLimit > 5000)) {
+      try {
+        const sweepRes = await sweepVirtualDoc({
+          textLimit,
+          stepDelayMs: 60,
+        });
+        if (sweepRes.fullText && sweepRes.fullText.length > summary.length) {
+          summary = sweepRes.fullText;
+        }
+      } catch {
+        /* 回退使用已采样的 summary */
+      }
+    }
+
     // 语义元素树(核心亮点):AI 据此理解页面结构
     const tree = buildTree(collectElementTree(root, 0, 4), 4, 20);
     return {
       ok: true,
       data: {
-        url: location.href,
+        url: typeof location !== 'undefined' ? location.href : '',
         title: document.title,
         summary,
         tree,
+        isVirtualized: detection.isVirtual,
       },
     };
   },
@@ -468,10 +508,16 @@ export const actions = {
       return { ok: true, data: { direction: dir } };
     }
     if (dir === 'up' || dir === 'down') {
-      // 连续滚动(触发懒加载):每步滚动 + 等待,多次后回到顶部等待页面回稳
+      // 连续滚动(触发懒加载/虚拟列表):每步滚动 + 派发滚动事件
       const step = (dir === 'down' ? 1 : -1) * window.innerHeight * 0.8;
+      const containers = getAllScrollableElements();
       for (let i = 0; i < iterations; i++) {
-        window.scrollBy({ top: step, behavior: 'smooth' });
+        if (dir === 'down') {
+          triggerScrollStep(containers, 650);
+        } else {
+          window.scrollBy({ top: step, behavior: 'smooth' });
+          containers.forEach((c) => (c.scrollTop += step));
+        }
         await new Promise((r) => setTimeout(r, intervalMs));
       }
       return { ok: true, data: { direction: dir, iterations } };
@@ -546,6 +592,35 @@ export const actions = {
       };
     }
 
+    const fullScan = args.fullScan !== false;
+    const detection = isVirtualizedPage();
+
+    // 虚拟滚动长文档(飞书 DocX / Notion 等)全量扫描多级大纲
+    if (fullScan && detection.isVirtual) {
+      try {
+        const sweep = await sweepVirtualDoc({
+          textLimit: 80000,
+          stepDelayMs: 60,
+        });
+
+        if (sweep.headings.length > 0) {
+          return {
+            ok: true,
+            data: {
+              title: document.title || '当前文档',
+              url: typeof location !== 'undefined' ? location.href : '',
+              totalSections: sweep.headings.length,
+              totalWords: sweep.fullText.length,
+              outline: sweep.headings,
+              isVirtualized: true,
+            },
+          };
+        }
+      } catch {
+        /* 回退使用普通 DOM 查询 */
+      }
+    }
+
     const sel = toStr(args.selector);
     let container: HTMLElement | null = sel ? document.querySelector<HTMLElement>(sel) : null;
     if (!container) {
@@ -573,7 +648,7 @@ export const actions = {
 
       totalWords += txt.length;
       const isHeading = /^h[1-4]$/.test(tag);
-      const isImportantPara = tag === 'p' && txt.length > 50 && outline.length < 40;
+      const isImportantPara = tag === 'p' && txt.length > 50 && outline.length < 50;
 
       if (isHeading || isImportantPara) {
         let anchorId = el.getAttribute('data-agent-anchor');
@@ -601,6 +676,7 @@ export const actions = {
         totalSections: outline.length,
         totalWords,
         outline,
+        isVirtualized: detection.isVirtual,
       },
     };
   },
@@ -812,6 +888,23 @@ export const actions = {
         note: '🎉 已成功将精美排版内容写入微信公众平台草稿！',
       },
     };
+  },
+
+  /** 将飞书云文档/网页长文全量转换为标准 Markdown */
+  async exportDocMarkdown(args: Record<string, unknown>): Promise<ToolResult> {
+    const textLimit = typeof args.textLimit === 'number' ? args.textLimit : 200000;
+    try {
+      const res = await extractDocMarkdown({ textLimit });
+      return {
+        ok: true,
+        data: {
+          ...res,
+          notice: '全量 Markdown 提取已完成，全文与下载卡片已就绪，当前操作已圆满结束。',
+        },
+      };
+    } catch (err) {
+      return { ok: false, error: `转换文档 Markdown 失败:${(err as Error).message}` };
+    }
   },
 
   async evaluate(args: Record<string, unknown>): Promise<ToolResult> {

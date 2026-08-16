@@ -7,6 +7,8 @@ function escapeHtml(s: string): string {
 
 function inline(s: string): string {
   let out = escapeHtml(s);
+  // 支持将已转义的 &lt;br&gt; 转化为真正的 HTML <br />
+  out = out.replace(/&lt;br\s*\/?&gt;/gi, '<br />');
   // 溯源引用链接: [1](cite:anchor-1) 或 [📍 1](cite:anchor-1) 或 [cite:anchor-1] 或 [§2.1](anchor:anchor-1)
   out = out.replace(/\[([^\]]+)\]\((?:cite|anchor):([a-zA-Z0-9_-]+)\)/g, (_m, label, anchor) => {
     const cleanLabel = label.replace(/^[📍#\s]+/, '').trim();
@@ -34,7 +36,9 @@ function tableToHtml(lines: string[]): string {
 
 /** 将 Markdown 文本转为 HTML(块级)。 */
 export function mdToHtml(md: string): string {
-  const lines = md.split('\n');
+  // 预处理：将独立的 <br> 标签换行，避免大模型输出未分行的单行带 <br> 文本
+  const normalizedMd = (md || '').replace(/<br\s*\/?>/gi, '\n');
+  const lines = normalizedMd.split('\n');
   const out: string[] = [];
   let i = 0;
   const listStack: Array<'ul' | 'ol'> = [];

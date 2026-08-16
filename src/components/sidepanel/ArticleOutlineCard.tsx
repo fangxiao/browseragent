@@ -20,7 +20,7 @@ export interface OutlineData {
 
 interface Props {
   data: OutlineData;
-  onNavigate: (anchorId: string) => void;
+  onNavigate: (anchorId: string, title?: string) => void;
 }
 
 export function ArticleOutlineCard({ data, onNavigate }: Props) {
@@ -29,9 +29,9 @@ export function ArticleOutlineCard({ data, onNavigate }: Props) {
   const [activeAnchor, setActiveAnchor] = useState<string | null>(null);
   const [copiedNote, setCopiedNote] = useState(false);
 
-  const handleJump = (anchorId: string) => {
+  const handleJump = (anchorId: string, title?: string) => {
     setActiveAnchor(anchorId);
-    onNavigate(anchorId);
+    onNavigate(anchorId, title);
   };
 
   const handleDownloadNote = () => {
@@ -104,7 +104,7 @@ export function ArticleOutlineCard({ data, onNavigate }: Props) {
                 return (
                   <button
                     key={`${h.anchorId}_${i}`}
-                    onClick={() => handleJump(h.anchorId)}
+                    onClick={() => handleJump(h.anchorId, h.title)}
                     title={`点击在网页中定位：${h.title}\n${h.snippet}`}
                     className={`w-full text-left flex items-start gap-1.5 py-1 px-1.5 rounded transition-colors text-[11px] ${indentClass} ${
                       isActive ? 'bg-amber-200/80 text-amber-950 font-semibold' : 'hover:bg-amber-100/60'
@@ -147,7 +147,7 @@ export function ArticleOutlineCard({ data, onNavigate }: Props) {
                       <span className="text-amber-400 select-none text-[10px]">─</span>
 
                       <button
-                        onClick={() => handleJump(h.anchorId)}
+                        onClick={() => handleJump(h.anchorId, h.title)}
                         title={`点击在网页中定位：${h.title}\n${h.snippet}`}
                         className={`inline-flex items-center gap-1 py-0.5 px-2 rounded-md border text-[10.5px] transition-all cursor-pointer ${
                           isActive

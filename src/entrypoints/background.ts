@@ -11,6 +11,7 @@ import { fetchAndSyncCloudConfig } from '@/utils/ai/remoteConfig';
 import type { ToolCall, ToolResult } from '@/utils/domTools/types';
 import type { AgentRunPayload, AgentEvent } from '@/utils/ai/agentTypes';
 import { markdownToWechatHtml } from '@/utils/wechat/styleInliner';
+import { markdownToFeishuHtml } from '@/utils/feishu/blockFormatter';
 
 export default defineBackground(() => {
   console.log('[ai-agent] background service worker started');
@@ -27,6 +28,26 @@ export default defineBackground(() => {
 
   // 后台启动时静默尝试同步一次云端 Agent 规则(无网络时自动降级使用内置规则)
   void fetchAndSyncCloudConfig().catch(() => {});
+
+  // 自动为已有打开的标签页注入 content script(避免重载扩展后老标签页无 content script)
+  const injectContentScriptToExistingTabs = async () => {
+    try {
+      const tabs = await browser.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+      for (const tab of tabs) {
+        if (tab.id != null) {
+          browser.scripting
+            .executeScript({
+              target: { tabId: tab.id },
+              files: ['/content-scripts/content.js'],
+            })
+            .catch(() => {});
+        }
+      }
+    } catch {
+      /* 忽略异常 */
+    }
+  };
+  void injectContentScriptToExistingTabs();
 
   // 点击扩展图标 → 自动打开侧边栏(Chrome 116+)
   browser.sidePanel
@@ -835,10 +856,12 @@ export default defineBackground(() => {
         const client = getClient(cfg.kind);
         // 记录初始页面 origin 并注入当前激活标签页的标题与 URL 上下文
         let currentTabInfo = '';
+        let currentTabUrl = '';
         try {
           const tab = await browser.tabs.get(payload.tabId);
           currentOrigin = new URL(tab.url ?? 'about:blank').origin;
-          currentTabInfo = `\n\n【当前激活标签页上下文 (Active Tab)】\n- 标签页 ID: ${payload.tabId}\n- 网页标题: "${tab.title ?? '未命名网页'}"\n- 网页 URL: ${tab.url ?? '未知'}\n⚠️ 强约束准则: 用户当前浏览器视窗正停留在上述网页！当用户提到“这篇文章/这个页面/当前网页/深度解读/总结/大纲”时，必须调用 getArticleOutline 或 readPage 实时读取该网页内容，严禁凭借历史对话残留中讨论过的旧文章直接回答，绝不可张冠李戴！`;
+          currentTabUrl = tab.url ?? '';
+          currentTabInfo = `\n\n【当前激活标签页 (Active Tab)】\n- 标签页 ID: ${payload.tabId}\n- 网页标题: "${tab.title ?? '未命名网页'}"\n- 网页 URL: ${tab.url ?? '未知'}`;
         } catch {
           currentOrigin = '';
         }
@@ -850,7 +873,7 @@ export default defineBackground(() => {
             ),
         });
         await driver.run(
-          { ...payload, currentTabInfo },
+          { ...payload, currentTabInfo, currentTabUrl },
           {
             onEvent: sendAgentEvent,
             signal: () => ac?.signal ?? new AbortController().signal,
@@ -941,12 +964,101 @@ export default defineBackground(() => {
     });
   });
 
+  // 监听跨域/同源图片抓取代理 (解决飞书/Notion等云文档图片 Cookie 鉴权与 CORS 跨域限制)
+  browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg?.type === 'FETCH_IMAGE_BINARY' && msg.url) {
+      (async () => {
+        try {
+          const url = String(msg.url);
+          let tabId = msg.tabId;
+          if (!tabId) {
+            const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+            tabId = tabs[0]?.id;
+          }
+
+          // 1. 优先尝试在当前 Tab 网页上下文中执行 fetch / canvas 提取 (100% 携带当前登录 Cookie)
+          if (tabId) {
+            try {
+              const execRes = await browser.scripting.executeScript({
+                target: { tabId },
+                func: async (targetUrl) => {
+                  try {
+                    // 尝试从 DOM 中的已加载图片通过 Canvas 提取 (绕过任何网络二次请求)
+                    const imgEl = Array.from(document.querySelectorAll('img')).find(
+                      (i) => i.src === targetUrl || i.getAttribute('data-src') === targetUrl || i.currentSrc === targetUrl,
+                    );
+                    if (imgEl && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+                      try {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = imgEl.naturalWidth;
+                        canvas.height = imgEl.naturalHeight;
+                        const ctx = canvas.getContext('2d');
+                        if (ctx) {
+                          ctx.drawImage(imgEl, 0, 0);
+                          const dataUrl = canvas.toDataURL('image/png');
+                          return { ok: true, dataUrl, contentType: 'image/png' };
+                        }
+                      } catch {}
+                    }
+
+                    // 在 Tab 内部执行 fetch (同源上下文，自动携带飞书 Cookie 凭据)
+                    const resp = await fetch(targetUrl, { credentials: 'include' });
+                    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
+                    const blob = await resp.blob();
+                    const contentType = blob.type || resp.headers.get('content-type') || 'image/png';
+                    return new Promise((resolve) => {
+                      const reader = new FileReader();
+                      reader.onloadend = () => resolve({ ok: true, dataUrl: reader.result as string, contentType });
+                      reader.onerror = () => resolve({ ok: false, error: '读取 Blob 失败' });
+                      reader.readAsDataURL(blob);
+                    });
+                  } catch (e) {
+                    return { ok: false, error: (e as Error).message };
+                  }
+                },
+                args: [url],
+              });
+
+              const result = execRes?.[0]?.result as any;
+              if (result && result.ok && result.dataUrl) {
+                sendResponse(result);
+                return;
+              }
+            } catch {
+              /* 忽略异常，降级走 background fetch */
+            }
+          }
+
+          // 2. 降级走 background fetch
+          const resp = await fetch(url);
+          if (!resp.ok) {
+            sendResponse({ ok: false, error: `HTTP ${resp.status}` });
+            return;
+          }
+          const blob = await resp.blob();
+          const contentType = blob.type || resp.headers.get('content-type') || 'image/png';
+          const reader = new FileReader();
+          reader.onloadend = () => sendResponse({ ok: true, dataUrl: reader.result as string, contentType });
+          reader.onerror = () => sendResponse({ ok: false, error: '读取失败' });
+          reader.readAsDataURL(blob);
+        } catch (err) {
+          sendResponse({ ok: false, error: (err as Error).message });
+        }
+      })();
+      return true; // 保持异步响应通道
+    }
+  });
+
   // 监听网页划词即问与局部透镜消息
   browser.runtime.onMessage.addListener((msg, sender) => {
     if (msg?.type === 'SIDEBAR:QUICK_ASK' && msg.prompt) {
-      if (sender.tab?.windowId && (browser.sidePanel as any)?.open) {
+      if ((browser.sidePanel as any)?.open) {
         try {
-          void (browser.sidePanel as any).open({ windowId: sender.tab.windowId });
+          if (sender.tab?.id != null) {
+            void (browser.sidePanel as any).open({ tabId: sender.tab.id });
+          } else if (sender.tab?.windowId != null) {
+            void (browser.sidePanel as any).open({ windowId: sender.tab.windowId });
+          }
         } catch {
           /* 忽略异常 */
         }

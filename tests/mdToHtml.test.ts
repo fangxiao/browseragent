@@ -37,4 +37,10 @@ describe('mdToHtml', () => {
     expect(html).toContain('cite-anchor-badge');
     expect(html).toContain('📍 1');
   });
+
+  it('支持将大模型输出的 <br> 或 <br/> 标签正常转为换行', () => {
+    const html = mdToHtml('第一项<br>第二项<br/>第三项');
+    expect(html).not.toContain('&lt;br&gt;');
+    expect(html).toBe('<p>第一项<br />第二项<br />第三项</p>');
+  });
 });

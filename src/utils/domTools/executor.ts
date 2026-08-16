@@ -20,6 +20,7 @@ const EXEC_MAP: Record<string, (args: Record<string, unknown>) => Promise<ToolRe
   getArticleOutline: actions.getArticleOutline,
   highlightAndScrollTo: actions.highlightAndScrollTo,
   writeWechatDraft: actions.writeWechatDraft,
+  exportDocMarkdown: actions.exportDocMarkdown,
   evaluate: actions.evaluate,
 };
 

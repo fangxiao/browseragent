@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import type { AgentEvent } from '@/utils/ai/agentTypes';
 import { mdToHtml } from '@/utils/mdToHtml';
 import { AgentStepCard } from './AgentStepCard';
@@ -20,6 +20,10 @@ import { TabSelector } from './TabSelector';
 import { PerformanceVisualCard } from './PerformanceVisualCard';
 import type { PerformanceMetricData } from '@/utils/reportExport';
 import { ArticleOutlineCard, type OutlineData } from './ArticleOutlineCard';
+import { FeishuPrdReviewCard, type PrdReviewData, type PrdReviewItem } from './FeishuPrdReviewCard';
+import { DocMarkdownExportCard } from './DocMarkdownExportCard';
+import type { DocMarkdownResult } from '@/utils/feishu/docToMarkdown';
+import { packageDocWithImagesAsZip, triggerZipDownload } from '@/utils/feishu/offlineDocPacker';
 
 interface Props {
   thinking: string;
@@ -31,7 +35,7 @@ interface Props {
   onConfirm: (confirmId: string, approved: boolean) => void;
   onCopy: () => void;
   onSelectTabs?: (tabs: TabItem[], mode: ComparisonMode) => void;
-  onAnchorClick?: (anchorId: string) => void;
+  onAnchorClick?: (anchorId: string, title?: string) => void;
 }
 
 /** steps 中最后一条待处理的确认请求(其后无 confirm-result) */
@@ -73,38 +77,31 @@ export function AgentMessage({
     .pop();
   const tabList = (listTabsResult?.result.data as { tabs?: TabItem[] } | undefined)?.tabs;
 
-  // 仅在明确是写公众号草稿动作时排除 TabSelector(避免寻找微信后台标签时误弹)
-  const isDraftWritingAction = Boolean(
-    text?.includes('未检测到微信公众平台草稿页') ||
-      steps.some(
-        (e) =>
-          (e.type === 'tool-use' || e.type === 'tool-result') &&
-          e.call.name === 'writeWechatDraft',
-      ),
-  );
-
+  // 判定是否处于多标签页对比/挑选场景
   const isTabComparisonScenario = Boolean(
-    !isDraftWritingAction &&
-      tabList &&
-      tabList.length > 0 &&
-      onSelectTabs &&
-      (Boolean(
-        text &&
-          (text.includes('对比') ||
-            text.includes('总结') ||
-            text.includes('选择') ||
-            text.includes('挑选') ||
-            text.includes('候选') ||
-            text.includes('哪两个') ||
-            text.includes('哪些') ||
-            text.includes('哪个') ||
-            text.includes('请确认') ||
-            text.includes('请问您是指') ||
-            text.includes('指定') ||
-            text.includes('标签页') ||
-            text.includes('打开了') ||
-            text.includes('tabId')),
-      ) ||
+    !streaming &&
+      text &&
+      !text.includes('未检测到微信') &&
+      !text.includes('未找到微信') &&
+      ((steps.length > 0 &&
+        steps.some(
+          (e) =>
+            e.type === 'tool-result' &&
+            e.call.name === 'listTabs' &&
+            e.result.ok &&
+            Array.isArray((e.result.data as any)?.tabs) &&
+            (e.result.data as any).tabs.length > 1,
+        ) &&
+        (text.includes('选择') ||
+          text.includes('对比') ||
+          text.includes('候选') ||
+          text.includes('哪个') ||
+          text.includes('请确认') ||
+          text.includes('请问您是指') ||
+          text.includes('指定') ||
+          text.includes('标签页') ||
+          text.includes('打开了') ||
+          text.includes('tabId'))) ||
         (thinking &&
           (thinking.includes('对比') ||
             thinking.includes('总结') ||
@@ -137,6 +134,137 @@ export function AgentMessage({
     )
     .pop();
   const outlineData = outlineResult?.result.data as OutlineData | undefined;
+
+  // 提取 exportDocMarkdown 结果或从 Markdown 正文提取 (供渲染 Markdown 全文导出卡片)
+  const docExportData = useMemo<DocMarkdownResult | null>(() => {
+    const docExportResult = steps
+      .filter(
+        (e): e is Extract<AgentEvent, { type: 'tool-result' }> =>
+          e.type === 'tool-result' &&
+          e.call.name === 'exportDocMarkdown' &&
+          e.result.ok &&
+          Boolean(e.result.data),
+      )
+      .pop();
+
+    if (docExportResult?.result.data) {
+      const d = docExportResult.result.data as any;
+      return {
+        title: d.title || '飞书文档',
+        url: d.url || '',
+        markdown: d.markdown || text || '',
+        wordCount: d.wordCount || (d.markdown || text || '').length,
+        blockCount: d.blockCount || 1,
+        headingsCount: d.headingsCount || 0,
+      };
+    }
+
+    if (!text) return null;
+
+    // 当没有显式工具结果，但 AI 生成了成篇的 Markdown 文档正文时，自动挂载导出卡片供用户下载/打包
+    const hasHeadings = /^#{1,4}\s+.+/m.test(text);
+    const isDocLike =
+      hasHeadings &&
+      (text.length > 200 ||
+        text.includes('知识库') ||
+        text.includes('【PRD】') ||
+        text.includes('需求背景') ||
+        text.includes('流程') ||
+        text.includes('📎 附件') ||
+        text.includes('Markdown'));
+
+    if (isDocLike) {
+      const titleMatch = text.match(/^#\s+(.+)$/m);
+      const title = titleMatch ? titleMatch[1]!.replace(/^[【[](.*)[】\]]/, '$1').trim() : '导出文档';
+      const headingsCount = (text.match(/^#{1,6}\s+/gm) || []).length;
+      return {
+        title,
+        url: '',
+        markdown: text,
+        wordCount: text.length,
+        blockCount: text.split('\n\n').length,
+        headingsCount,
+      };
+    }
+
+    return null;
+  }, [steps, text]);
+
+  // 提取 PRD / 方案评审雷达数据 (强约束：仅在用户明确要求评审且包含显式评审标题时触发，文档导出绝不误触)
+  const prdReviewData: PrdReviewData | null = useMemo(() => {
+    if (!text || docExportData) return null;
+
+    // 必须包含显式的评审雷达专属标题 (严禁将普通的 # 【PRD】文档标题误当作评审)
+    const isExplicitPrdReview =
+      text.includes('🛡️ 飞书 PRD / 方案智能评审雷达') ||
+      text.includes('🛡️ PRD / 方案智能评审雷达') ||
+      text.includes('🛡️ PRD/方案智能评审雷达') ||
+      text.includes('【PRD评审雷达】') ||
+      text.includes('【PRD 评审雷达】') ||
+      text.includes('【需求评审雷达】') ||
+      text.includes('【架构评审雷达】');
+
+    if (!isExplicitPrdReview) {
+      return null;
+    }
+
+    const scoreMatch = text.match(/(?:综合质量评分|综合评分|质量评分)[：:\s]*([0-9]{1,3})/i);
+    if (!scoreMatch) {
+      return null;
+    }
+    const score = Math.min(100, Math.max(0, parseInt(scoreMatch[1]!, 10)));
+
+    const items: PrdReviewItem[] = [];
+    const lines = text.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (/[-*•]?\s*\[?🔴\s*(?:严重|死锁|漏洞)?\]?/i.test(trimmed) || /🔴/.test(trimmed)) {
+        const clean = trimmed.replace(/^[-*•]?\s*\[?🔴[^\]]*\]?\s*/, '').replace(/^\*\*|\*\*$/g, '');
+        const parts = clean.split(/[：:]/);
+        items.push({
+          type: 'critical',
+          title: (parts[0] || '逻辑缺陷').trim(),
+          desc: (parts.slice(1).join('：') || parts[0] || '').trim(),
+        });
+      } else if (/[-*•]?\s*\[?🟡\s*(?:警告|边界|遗漏)?\]?/i.test(trimmed) || /🟡/.test(trimmed)) {
+        const clean = trimmed.replace(/^[-*•]?\s*\[?🟡[^\]]*\]?\s*/, '').replace(/^\*\*|\*\*$/g, '');
+        const parts = clean.split(/[：:]/);
+        items.push({
+          type: 'warning',
+          title: (parts[0] || '边界遗漏').trim(),
+          desc: (parts.slice(1).join('：') || parts[0] || '').trim(),
+        });
+      } else if (/[-*•]?\s*\[?🟢\s*(?:建议|测试|验收)?\]?/i.test(trimmed) || /🟢/.test(trimmed)) {
+        const clean = trimmed.replace(/^[-*•]?\s*\[?🟢[^\]]*\]?\s*/, '').replace(/^\*\*|\*\*$/g, '');
+        const parts = clean.split(/[：:]/);
+        items.push({
+          type: 'suggestion',
+          title: (parts[0] || '验收建议').trim(),
+          desc: (parts.slice(1).join('：') || parts[0] || '').trim(),
+        });
+      }
+    }
+
+    const actionItems: string[] = [];
+    const actionMatches = text.match(/(?:[-*•]\s*\[\s*\]\s*|(?:\d+\.))\s*(.*?)(?=\n|$)/g);
+    if (actionMatches) {
+      for (const a of actionMatches) {
+        const clean = a.replace(/^[-*•\d.\s\[\]]+/, '').trim();
+        if (clean.length > 3 && !clean.includes('评分') && !clean.includes('http')) {
+          actionItems.push(clean);
+        }
+      }
+    }
+
+    if (items.length === 0 && actionItems.length === 0) return null;
+
+    return {
+      score,
+      summary: '已完成全篇逻辑拓扑与边界扫描，提取了关键改进意见与测试矩阵。',
+      items: items.slice(0, 10),
+      actionItems: actionItems.length > 0 ? actionItems.slice(0, 8) : items.map((i) => i.title).slice(0, 6),
+    };
+  }, [text]);
 
   const handleCopy = async () => {
     await onCopy();
@@ -232,9 +360,19 @@ export function AgentMessage({
         />
       )}
 
-      {/* 沉浸式阅读:文章大纲与段落导航卡片 */}
-      {outlineData && onAnchorClick && (
+      {/* 飞书/长文档 Markdown 全文提取与一键下载卡片 (导出场景专属展示) */}
+      {docExportData && (
+        <DocMarkdownExportCard data={docExportData} />
+      )}
+
+      {/* 沉浸式阅读:文章大纲与段落导航卡片 (仅在纯阅读/解读场景下展示，文档导出场景下严格隐藏) */}
+      {!docExportData && outlineData && onAnchorClick && (
         <ArticleOutlineCard data={outlineData} onNavigate={onAnchorClick} />
+      )}
+
+      {/* 飞书 PRD / 架构方案智能评审雷达卡片 (仅在明确评审场景下展示) */}
+      {!docExportData && prdReviewData && (
+        <FeishuPrdReviewCard data={prdReviewData} />
       )}
 
       {/* 交互式标签页复选框选择器(仅在明确对比意图下展示) */}
@@ -252,8 +390,11 @@ export function AgentMessage({
 
       {/* 操作:复制 */}
       {!streaming && text && (
-        <div className="mt-1.5 flex items-center gap-2 border-t border-blue-100 pt-1.5">
-          <button onClick={() => void handleCopy()} className="text-[11px] text-blue-600 hover:underline">
+        <div className="mt-1.5 flex items-center gap-2 border-t border-blue-100 pt-1 text-[11px]">
+          <button
+            onClick={() => void handleCopy()}
+            className="text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+          >
             {copied ? '已复制' : '复制'}
           </button>
         </div>

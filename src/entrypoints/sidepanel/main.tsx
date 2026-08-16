@@ -1,7 +1,4 @@
-// 侧边栏主视图:统一交互式对话(2026-08-14)。
-// 取消「对话|智能体」双模式:输入目标 → AI 经 Agent 薄 loop 操作页面,
-// 思考/工具步骤/安全确认/结果全部以对话消息呈现(ADR-0007/0008)。
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import '../../assets/main.css';
 import type { AgentEvent } from '@/utils/ai/agentTypes';
@@ -43,6 +40,190 @@ function App() {
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const isComposingRef = useRef(false);
+
+  const [activeTab, setActiveTab] = useState<{ id?: number; url?: string; title?: string }>({});
+
+  // 实时感知当前激活标签页的 URL 与标题
+  useEffect(() => {
+    const updateActiveTab = async () => {
+      try {
+        if (typeof browser !== 'undefined' && browser.tabs?.query) {
+          const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+          if (tabs[0]) {
+            setActiveTab({
+              id: tabs[0].id,
+              url: tabs[0].url,
+              title: tabs[0].title,
+            });
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    void updateActiveTab();
+
+    const onActivated = () => void updateActiveTab();
+    const onUpdated = (_tabId: number, changeInfo: { url?: string; status?: string }) => {
+      if (changeInfo.url || changeInfo.status === 'complete') {
+        void updateActiveTab();
+      }
+    };
+
+    if (typeof browser !== 'undefined' && browser.tabs) {
+      browser.tabs.onActivated?.addListener(onActivated);
+      browser.tabs.onUpdated?.addListener(onUpdated);
+    }
+
+    return () => {
+      if (typeof browser !== 'undefined' && browser.tabs) {
+        browser.tabs.onActivated?.removeListener(onActivated);
+        browser.tabs.onUpdated?.removeListener(onUpdated);
+      }
+    };
+  }, []);
+
+  // 计算当前网页的动态引导上下文
+  const welcomeContext = useMemo(() => {
+    const cleanUrl = activeTab.url || '';
+    const isFeishu = /feishu\.cn|larksuite\.com/i.test(cleanUrl);
+    const isWechat = /mp\.weixin\.qq\.com/i.test(cleanUrl);
+    const isDev = /github\.com|gitlab\.com|gitee\.com|juejin\.cn|csdn\.net|v2ex\.com|cnblogs\.com/i.test(cleanUrl);
+
+    if (isFeishu) {
+      return {
+        icon: '📄',
+        tag: '飞书文档 / 知识库',
+        title: '👋 你好，正在浏览飞书文档',
+        description: activeTab.title ? `《${activeTab.title.slice(0, 24)}》已连接` : '我已准备好为你提供高保真 Markdown 导出与 PRD 智能评审',
+        actions: [
+          {
+            id: 'feishu-export-md',
+            label: '导出 Markdown / ZIP',
+            prompt: '将当前飞书文档全量转为 Markdown 并提供下载',
+            icon: '📥',
+            description: '高保真提取，保留表格、代码块与图片',
+          },
+          {
+            id: 'feishu-prd-review',
+            label: 'PRD 4 维逻辑评审',
+            prompt: '对当前飞书文档进行 PRD 智能逻辑深度评审，找出死锁与边界遗漏',
+            icon: '🛡️',
+            description: '4 维逻辑扫描，提取缺陷与验收矩阵',
+          },
+          {
+            id: 'feishu-action-items',
+            label: '提炼核心待办',
+            prompt: '梳理这篇文档中的所有待办事项、负责人与推进计划',
+            icon: '☑️',
+            description: '整理落地清单与责任分工',
+          },
+          {
+            id: 'reading-summary',
+            label: '文章大纲与精读',
+            prompt: '梳理这篇文章的核心脉络，提炼主旨、章节精读与深度洞察，并附带精准段落溯源',
+            icon: '💡',
+            description: '生成带 [📍 1] 跳转溯源标记的研报',
+          },
+        ],
+      };
+    }
+
+    if (isWechat) {
+      return {
+        icon: '✍️',
+        tag: '微信公众平台',
+        title: '👋 你好，正在使用微信公众号后台',
+        description: '我能为你一键生成全内联富文本排版并自动填入草稿箱、提炼爆款标题与摘要',
+        actions: [
+          {
+            id: 'wechat-inline-theme',
+            label: '微信公众号排版并注入',
+            prompt: '将内容转化为微信公众号精美排版并注入当前草稿箱',
+            icon: '🎨',
+            description: '支持科技蓝/极简黑/双色标题/Mac代码块',
+          },
+          {
+            id: 'wechat-title-digest',
+            label: '提炼爆款标题与 120 字摘要',
+            prompt: '提炼适合微信公众号传播的爆款标题与 120 字引言摘要',
+            icon: '🔥',
+            description: '打造高打开率与传播力文案',
+          },
+        ],
+      };
+    }
+
+    if (isDev) {
+      return {
+        icon: '⚡',
+        tag: '技术开发 / 开源社区',
+        title: '👋 你好，正在浏览技术站点',
+        description: activeTab.title ? `《${activeTab.title.slice(0, 24)}》已连接` : '我能为你诊断加载性能与 Web Vitals 瓶颈、精读架构设计或提取数据',
+        actions: [
+          {
+            id: 'devtool-perf-audit',
+            label: '全维度性能测速诊断',
+            prompt: '对当前页面进行全维度性能测速与诊断，输出核心 Web 指标与优化方案',
+            icon: '⚡',
+            description: 'DNS/TCP/TTFB/FCP/慢资源与主线程卡顿',
+          },
+          {
+            id: 'reading-summary',
+            label: '架构精读与精准溯源',
+            prompt: '梳理这篇文章的核心脉络，提炼主旨、章节精读与深度洞察，并附带精准段落溯源',
+            icon: '💡',
+            description: '生成带 [📍 1] 跳转溯源标记的研报',
+          },
+          {
+            id: 'data-extract-csv',
+            label: '提取数据为 CSV',
+            prompt: '从当前网页提取表格或列表数据并整理为 CSV 下载',
+            icon: '📊',
+            description: '快速将结构化数据转为表格',
+          },
+        ],
+      };
+    }
+
+    return {
+      icon: '🌐',
+      tag: '智能浏览器助手',
+      title: '👋 你好，我是 AI 浏览器助手',
+      description: '我能直接操作你当前打开的网页: 长文精读与段落溯源、数据提取导出、跨页对比与测速体检',
+      actions: [
+        {
+          id: 'reading-summary',
+          label: '深度精读与段落溯源',
+          prompt: '梳理这篇文章的核心脉络，提炼主旨、章节精读与深度洞察，并附带精准段落溯源',
+          icon: '💡',
+          description: '生成带 [📍 1] 原文跳转锚点的结构化解读',
+        },
+        {
+          id: 'data-extract-csv',
+          label: '提取页面数据为 CSV',
+          prompt: '从当前网页提取表格或列表数据并整理为 CSV 下载',
+          icon: '📊',
+          description: '自动解析表格与列表结构',
+        },
+        {
+          id: 'devtool-perf-audit',
+          label: '页面性能测速体检',
+          prompt: '对当前页面进行全维度性能测速与诊断，输出核心 Web 指标与优化方案',
+          icon: '⚡',
+          description: '毫秒级加载时序与 Core Web Vitals',
+        },
+        {
+          id: 'multi-tab-compare',
+          label: '跨标签页横向对比',
+          prompt: '对比当前打开的多个网页方案或商品',
+          icon: '🔀',
+          description: '多标签页数据自动对齐与决策建议',
+        },
+      ],
+    };
+  }, [activeTab.url, activeTab.title]);
 
   const scrollToBottom = useCallback((smooth = false) => {
     if (messagesContainerRef.current) {
@@ -312,16 +493,59 @@ function App() {
   }, []);
 
   /** 用户点击文章大纲或溯源引用标签,平滑滚动页面并柔光高亮 */
-  const handleAnchorClick = useCallback(async (anchorId: string) => {
+  const handleAnchorClick = useCallback(async (anchorId: string, title?: string) => {
     try {
       const tabId = await getActiveTabId();
       if (!tabId) return;
       await browser.scripting.executeScript({
         target: { tabId },
-        func: (aid) => {
+        func: (aid, headingTitle) => {
+          // 1. 尝试直接按 data-agent-anchor 或 ID 查找
           let targetEl = document.querySelector<HTMLElement>(`[data-agent-anchor="${aid}"], #${aid}`);
+
+          // 2. 如果未找到 (如飞书虚拟列表节点被卸载), 优先点击飞书/Notion等原生目录栏中的对应条目触发原生跳转
+          if (!targetEl && headingTitle) {
+            const clean = headingTitle.replace(/^[#\d.\s]+/, '').trim();
+            const catalogItems = Array.from(
+              document.querySelectorAll<HTMLElement>(
+                '.docx-catalog-item, .catalog-item, .doc-catalog-item, .navigation-item, .tree-node, [class*="catalog" i] [class*="item" i], [data-testid*="catalog" i]',
+              ),
+            );
+            for (const item of catalogItems) {
+              const itemTxt = (item.textContent || '').trim();
+              if (itemTxt && (itemTxt.includes(clean) || clean.includes(itemTxt))) {
+                item.click();
+                targetEl = item;
+                break;
+              }
+            }
+          }
+
+          // 3. 如果仍未找到，在正文已渲染节点中模糊匹配标题文案
+          if (!targetEl && headingTitle) {
+            const clean = headingTitle.replace(/^[#\d.\s]+/, '').trim();
+            if (clean.length >= 2) {
+              const allEls = Array.from(
+                document.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6, p, .docx-block, .doc-block'),
+              );
+              for (const el of allEls) {
+                const t = (el.textContent || '').trim();
+                if (t && (t === clean || t.includes(clean) || (clean.length > 6 && t.startsWith(clean.slice(0, 8))))) {
+                  targetEl = el;
+                  break;
+                }
+              }
+            }
+          }
+
           if (!targetEl) return;
-          targetEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+
+          try {
+            targetEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+          } catch {
+            targetEl.scrollIntoView();
+          }
+
           if (!document.getElementById('ai-agent-pulse-style')) {
             const style = document.createElement('style');
             style.id = 'ai-agent-pulse-style';
@@ -345,7 +569,7 @@ function App() {
             targetEl?.classList.remove('ai-agent-pulse-target');
           }, 2600);
         },
-        args: [anchorId],
+        args: [anchorId, title || ''],
       });
     } catch (err) {
       console.warn('[handleAnchorClick] failed to highlight anchor:', err);
@@ -418,16 +642,54 @@ function App() {
         className="min-h-0 flex-1 space-y-2 overflow-y-auto py-1 scroll-smooth"
       >
         {messages.length === 0 && (
-          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-xs">
-            <div className="text-sm font-medium text-gray-700">👋 你好,我是 AI 浏览器助手</div>
-            <div className="leading-relaxed text-gray-400">
-              我能直接操作你当前打开的网页: 长文精读与段落溯源、数据提取导出、
-              跨页研究对比、表单填写与测速体检。
+          <div className="flex min-h-full flex-col items-center justify-center gap-2.5 px-4 py-4 text-center text-xs">
+            {/* 页面感知徽标 */}
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-blue-50/80 border border-blue-200/80 text-blue-800 text-[11px] font-medium max-w-full truncate shadow-2xs">
+              <span className="shrink-0">{welcomeContext.icon}</span>
+              <span className="truncate">{welcomeContext.tag}</span>
             </div>
-            <div className="mt-1 text-gray-300">
-              直接告诉我你想做什么,比如
-              <br />
-              "提炼文章核心大纲与论据出处" / "把这个表格整理成 CSV" / "查这几个页面的报价对比"
+
+            {/* 标题与描述 */}
+            <div className="text-sm font-semibold text-gray-800 tracking-tight">
+              {welcomeContext.title}
+            </div>
+            <div className="leading-relaxed text-gray-500 max-w-[280px] text-[11px]">
+              {welcomeContext.description}
+            </div>
+
+            {/* 动态快捷指令推荐胶囊 */}
+            <div className="mt-1 flex flex-col gap-1.5 w-full max-w-[290px]">
+              <div className="text-[10.5px] font-medium text-gray-400 text-left px-1 flex items-center justify-between">
+                <span>✨ 推荐快捷指令</span>
+                <span className="text-[10px] text-blue-500 font-normal">点击即刻执行</span>
+              </div>
+              {welcomeContext.actions.map((act) => (
+                <button
+                  key={act.id}
+                  onClick={() => void sendWithPrompt(act.prompt)}
+                  disabled={running}
+                  className="group flex items-center justify-between p-2 rounded-lg border border-gray-200/90 bg-white hover:bg-blue-50/60 hover:border-blue-300 text-left transition-all cursor-pointer shadow-2xs disabled:opacity-50"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm group-hover:scale-110 transition-transform shrink-0">
+                      {act.icon || '⚡'}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="font-medium text-gray-800 text-[11.5px] truncate group-hover:text-blue-700">
+                        {act.label}
+                      </div>
+                      {act.description && (
+                        <div className="text-[10px] text-gray-400 truncate">
+                          {act.description}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <span className="text-gray-300 group-hover:text-blue-500 text-xs shrink-0 ml-1">
+                    →
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
         )}

@@ -48,7 +48,8 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
       type: 'object',
       properties: {
         selector: { type: 'string', description: '可选,限定读取范围(如 main、#list)' },
-        textLimit: { type: 'number', description: '可选,文本摘要最大字符数,默认 2000,最大 20000' },
+        textLimit: { type: 'number', description: '可选,文本摘要最大字符数,默认 5000,最大 50000' },
+        fullScan: { type: 'boolean', description: '可选,是否自动对飞书/Notion/超长虚拟滚动页面执行静默高速全量扫描,默认 true' },
         tabId: { type: 'number', description: '可选,指定要读取的目标标签页 ID(不传则读取当前激活标签页)' },
       },
     },
@@ -163,6 +164,7 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
       type: 'object',
       properties: {
         selector: { type: 'string', description: '可选,限定正文容器选择器(如 article, main, .markdown-body)' },
+        fullScan: { type: 'boolean', description: '可选,是否自动对飞书/Notion等虚拟滚动长文档进行全量静默遍历大纲,默认 true' },
         tabId: { type: 'number', description: '可选,指定目标标签页 ID(不传则读取当前标签页)' },
       },
     },
@@ -197,6 +199,17 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
           description: '可选,排版主题,默认 tech-blue(科技商务蓝)',
         },
         tabId: { type: 'number', description: '可选,目标微信公众平台标签页 ID(不传则写入当前页面)' },
+      },
+    },
+  ),
+  define(
+    'exportDocMarkdown',
+    '将飞书云文档 (feishu.cn/larksuite.com) 或当前网页长文全量转换为标准 Markdown 文本，并完整保留 H1~H6 标题、Callout 高亮块、表格 Table、待办清单 Todo、代码块 Code 与格式。支持一键复制与下载 .md。',
+    {
+      type: 'object',
+      properties: {
+        textLimit: { type: 'number', description: '可选,最大转换字符上限,默认 100,000 字' },
+        tabId: { type: 'number', description: '可选,指定目标标签页 ID(不传则转换当前激活标签页)' },
       },
     },
   ),

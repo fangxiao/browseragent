@@ -30,7 +30,7 @@ interface Props {
   /** agent 消息内嵌安全确认响应 */
   onConfirmAgent: (confirmId: string, approved: boolean) => void;
   onSelectTabs?: (tabs: TabItem[], mode: ComparisonMode) => void;
-  onAnchorClick?: (anchorId: string) => void;
+  onAnchorClick?: (anchorId: string, title?: string) => void;
 }
 
 export function MessageItem({
@@ -52,14 +52,17 @@ export function MessageItem({
   }, [message.text, message.thinking, message.streaming]);
 
   const handleCopy = async () => {
-    await onCopy(message.id);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    if (message.text) {
+      await navigator.clipboard.writeText(message.text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+      onCopy(message.id);
+    }
   };
 
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end">
+      <div ref={ref} className="flex justify-end">
         <div className="max-w-[85%] rounded-lg rounded-tr-sm bg-blue-600 px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap text-white">
           {message.text}
         </div>
@@ -89,7 +92,7 @@ export function MessageItem({
   return (
     <div ref={ref} className="flex justify-start">
       <div className="max-w-[92%] rounded-lg rounded-tl-sm border border-gray-200 bg-white px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap text-gray-800">
-        {message.text}
+        {message.text?.replace(/<br\s*\/?>/gi, '\n')}
         {message.streaming && <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-blue-400" />}
         {message.error && (
           <div className="mt-1 rounded bg-red-50 px-2 py-1 text-red-600">{message.error}</div>
