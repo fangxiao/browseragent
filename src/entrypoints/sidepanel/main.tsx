@@ -13,6 +13,7 @@ import {
 } from '@/utils/sidepanelClient';
 import { MessageItem, type UiMessage } from '@/components/sidepanel/MessageItem';
 import { SessionHistoryModal } from '@/components/sidepanel/SessionHistoryModal';
+import { WorkflowManagerCard } from '@/components/sidepanel/WorkflowManagerCard';
 import {
   createSession,
   loadStore,
@@ -28,6 +29,7 @@ function App() {
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [sessionId, setSessionId] = useState('');
   const [showHistory, setShowHistory] = useState(false);
+  const [showWorkflowModal, setShowWorkflowModal] = useState(false);
   const [history, setHistory] = useState<AgentSession[]>([]);
   const [input, setInput] = useState('');
   const [toast, setToast] = useState('');
@@ -87,48 +89,8 @@ function App() {
   // 计算当前网页的动态引导上下文
   const welcomeContext = useMemo(() => {
     const cleanUrl = activeTab.url || '';
-    const isFeishu = /feishu\.cn|larksuite\.com/i.test(cleanUrl);
     const isWechat = /mp\.weixin\.qq\.com/i.test(cleanUrl);
     const isDev = /github\.com|gitlab\.com|gitee\.com|juejin\.cn|csdn\.net|v2ex\.com|cnblogs\.com/i.test(cleanUrl);
-
-    if (isFeishu) {
-      return {
-        icon: '📄',
-        tag: '飞书文档 / 知识库',
-        title: '👋 你好，正在浏览飞书文档',
-        description: activeTab.title ? `《${activeTab.title.slice(0, 24)}》已连接` : '我已准备好为你提供高保真 Markdown 导出与 PRD 智能评审',
-        actions: [
-          {
-            id: 'feishu-export-md',
-            label: '导出 Markdown / ZIP',
-            prompt: '将当前飞书文档全量转为 Markdown 并提供下载',
-            icon: '📥',
-            description: '高保真提取，保留表格、代码块与图片',
-          },
-          {
-            id: 'feishu-prd-review',
-            label: 'PRD 4 维逻辑评审',
-            prompt: '对当前飞书文档进行 PRD 智能逻辑深度评审，找出死锁与边界遗漏',
-            icon: '🛡️',
-            description: '4 维逻辑扫描，提取缺陷与验收矩阵',
-          },
-          {
-            id: 'feishu-action-items',
-            label: '提炼核心待办',
-            prompt: '梳理这篇文档中的所有待办事项、负责人与推进计划',
-            icon: '☑️',
-            description: '整理落地清单与责任分工',
-          },
-          {
-            id: 'reading-summary',
-            label: '文章大纲与精读',
-            prompt: '梳理这篇文章的核心脉络，提炼主旨、章节精读与深度洞察，并附带精准段落溯源',
-            icon: '💡',
-            description: '生成带 [📍 1] 跳转溯源标记的研报',
-          },
-        ],
-      };
-    }
 
     if (isWechat) {
       return {
@@ -160,7 +122,7 @@ function App() {
         icon: '⚡',
         tag: '技术开发 / 开源社区',
         title: '👋 你好，正在浏览技术站点',
-        description: activeTab.title ? `《${activeTab.title.slice(0, 24)}》已连接` : '我能为你诊断加载性能与 Web Vitals 瓶颈、精读架构设计或提取数据',
+        description: activeTab.title ? `《${activeTab.title.slice(0, 24)}》已连接` : '我能为你诊断加载性能与 Web Vitals 瓶颈、提取表格数据或管理标签页',
         actions: [
           {
             id: 'devtool-perf-audit',
@@ -170,18 +132,18 @@ function App() {
             description: 'DNS/TCP/TTFB/FCP/慢资源与主线程卡顿',
           },
           {
-            id: 'reading-summary',
-            label: '架构精读与精准溯源',
-            prompt: '梳理这篇文章的核心脉络，提炼主旨、章节精读与深度洞察，并附带精准段落溯源',
-            icon: '💡',
-            description: '生成带 [📍 1] 跳转溯源标记的研报',
-          },
-          {
             id: 'data-extract-csv',
             label: '提取数据为 CSV',
             prompt: '从当前网页提取表格或列表数据并整理为 CSV 下载',
             icon: '📊',
             description: '快速将结构化数据转为表格',
+          },
+          {
+            id: 'organize-tabs',
+            label: '整理与去重标签页',
+            prompt: '扫描当前打开的所有标签页，列出全部网页清单并排查重复项',
+            icon: '🏷️',
+            description: '交互看板展示、去重与勾选清理',
           },
         ],
       };
@@ -190,22 +152,22 @@ function App() {
     return {
       icon: '🌐',
       tag: '智能浏览器助手',
-      title: '👋 你好，我是 AI 浏览器助手',
-      description: '我能直接操作你当前打开的网页: 长文精读与段落溯源、数据提取导出、跨页对比与测速体检',
+      title: '👋 你好，今天想处理什么任务？',
+      description: '我能直接管理浏览器与操作网页: 标签页整理去重、性能测速体检、数据提取与历史追溯',
       actions: [
         {
-          id: 'reading-summary',
-          label: '深度精读与段落溯源',
-          prompt: '梳理这篇文章的核心脉络，提炼主旨、章节精读与深度洞察，并附带精准段落溯源',
-          icon: '💡',
-          description: '生成带 [📍 1] 原文跳转锚点的结构化解读',
+          id: 'organize-tabs',
+          label: '整理与去重标签页',
+          prompt: '扫描当前打开的所有标签页，列出全部网页清单并排查重复项',
+          icon: '🏷️',
+          description: '交互看板展示、去重与勾选清理',
         },
         {
-          id: 'data-extract-csv',
-          label: '提取页面数据为 CSV',
-          prompt: '从当前网页提取表格或列表数据并整理为 CSV 下载',
-          icon: '📊',
-          description: '自动解析表格与列表结构',
+          id: 'close-duplicates',
+          label: '清理重复标签页',
+          prompt: '检查当前打开的所有标签页，识别重复打开的相同网页并提供去重清理看板',
+          icon: '🧹',
+          description: '识别冗余副本并一键去重',
         },
         {
           id: 'devtool-perf-audit',
@@ -215,11 +177,11 @@ function App() {
           description: '毫秒级加载时序与 Core Web Vitals',
         },
         {
-          id: 'multi-tab-compare',
-          label: '跨标签页横向对比',
-          prompt: '对比当前打开的多个网页方案或商品',
-          icon: '🔀',
-          description: '多标签页数据自动对齐与决策建议',
+          id: 'data-extract-csv',
+          label: '提取页面数据为 CSV',
+          prompt: '从当前网页提取表格或列表数据并整理为 CSV 下载',
+          icon: '📊',
+          description: '自动解析表格与列表结构',
         },
       ],
     };
@@ -492,90 +454,6 @@ function App() {
     setMessages((prev) => prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)));
   }, []);
 
-  /** 用户点击文章大纲或溯源引用标签,平滑滚动页面并柔光高亮 */
-  const handleAnchorClick = useCallback(async (anchorId: string, title?: string) => {
-    try {
-      const tabId = await getActiveTabId();
-      if (!tabId) return;
-      await browser.scripting.executeScript({
-        target: { tabId },
-        func: (aid, headingTitle) => {
-          // 1. 尝试直接按 data-agent-anchor 或 ID 查找
-          let targetEl = document.querySelector<HTMLElement>(`[data-agent-anchor="${aid}"], #${aid}`);
-
-          // 2. 如果未找到 (如飞书虚拟列表节点被卸载), 优先点击飞书/Notion等原生目录栏中的对应条目触发原生跳转
-          if (!targetEl && headingTitle) {
-            const clean = headingTitle.replace(/^[#\d.\s]+/, '').trim();
-            const catalogItems = Array.from(
-              document.querySelectorAll<HTMLElement>(
-                '.docx-catalog-item, .catalog-item, .doc-catalog-item, .navigation-item, .tree-node, [class*="catalog" i] [class*="item" i], [data-testid*="catalog" i]',
-              ),
-            );
-            for (const item of catalogItems) {
-              const itemTxt = (item.textContent || '').trim();
-              if (itemTxt && (itemTxt.includes(clean) || clean.includes(itemTxt))) {
-                item.click();
-                targetEl = item;
-                break;
-              }
-            }
-          }
-
-          // 3. 如果仍未找到，在正文已渲染节点中模糊匹配标题文案
-          if (!targetEl && headingTitle) {
-            const clean = headingTitle.replace(/^[#\d.\s]+/, '').trim();
-            if (clean.length >= 2) {
-              const allEls = Array.from(
-                document.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6, p, .docx-block, .doc-block'),
-              );
-              for (const el of allEls) {
-                const t = (el.textContent || '').trim();
-                if (t && (t === clean || t.includes(clean) || (clean.length > 6 && t.startsWith(clean.slice(0, 8))))) {
-                  targetEl = el;
-                  break;
-                }
-              }
-            }
-          }
-
-          if (!targetEl) return;
-
-          try {
-            targetEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-          } catch {
-            targetEl.scrollIntoView();
-          }
-
-          if (!document.getElementById('ai-agent-pulse-style')) {
-            const style = document.createElement('style');
-            style.id = 'ai-agent-pulse-style';
-            style.textContent = `
-              @keyframes aiAgentPulseGlow {
-                0% { outline: 3px solid #f59e0b; box-shadow: 0 0 16px rgba(245, 158, 11, 0.6); background-color: rgba(254, 240, 138, 0.45); }
-                50% { outline: 4px solid #d97706; box-shadow: 0 0 24px rgba(245, 158, 11, 0.85); background-color: rgba(254, 240, 138, 0.65); }
-                100% { outline: 2px solid transparent; box-shadow: none; background-color: transparent; }
-              }
-              .ai-agent-pulse-target {
-                animation: aiAgentPulseGlow 2.5s ease-out forwards !important;
-                border-radius: 4px !important;
-              }
-            `;
-            document.head.appendChild(style);
-          }
-          targetEl.classList.remove('ai-agent-pulse-target');
-          void targetEl.offsetWidth;
-          targetEl.classList.add('ai-agent-pulse-target');
-          setTimeout(() => {
-            targetEl?.classList.remove('ai-agent-pulse-target');
-          }, 2600);
-        },
-        args: [anchorId, title || ''],
-      });
-    } catch (err) {
-      console.warn('[handleAnchorClick] failed to highlight anchor:', err);
-    }
-  }, []);
-
   /** 内嵌确认响应 */
   const confirmAgent = useCallback((confirmId: string, approved: boolean) => {
     handleRef.current?.sendConfirm(confirmId, approved);
@@ -591,8 +469,7 @@ function App() {
 
   return (
     <div className="flex h-screen flex-col gap-2 p-3">
-      <header className="flex items-center justify-between">
-        <h1 className="text-base font-semibold text-gray-800">AI 浏览器助手</h1>
+      <header className="flex items-center justify-end pb-0.5">
         <div className="flex items-center gap-1">
           <button
             onClick={newChat}
@@ -611,22 +488,31 @@ function App() {
             📋 历史
           </button>
           <button
-            onClick={() => {
-              if (!settings) return;
-              const next = { ...settings, debugMode: !settings.debugMode };
-              setSettings(next);
-              void saveSettings(next);
-              showToast(next.debugMode ? '已开启调试模式(展开所有步骤)' : '已关闭调试模式');
-            }}
-            title={settings?.debugMode ? '调试模式已开启(点击关闭)' : '开启调试模式(查看详细步骤与日志)'}
-            className={`rounded border px-2 py-0.5 text-xs transition-colors ${
-              settings?.debugMode
-                ? 'border-indigo-300 bg-indigo-50 text-indigo-700 font-medium'
-                : 'border-gray-200 text-gray-500 hover:bg-gray-100'
+            onClick={() => setShowWorkflowModal((v) => !v)}
+            title="流程自动化与工作流(录制/回放/自定义日常流程)"
+            className={`rounded border px-2 py-0.5 text-xs transition-colors cursor-pointer ${
+              showWorkflowModal
+                ? 'border-purple-300 bg-purple-50 text-purple-700 font-medium'
+                : 'border-gray-200 text-gray-600 hover:bg-gray-100'
             }`}
           >
-            {settings?.debugMode ? '🐛 调试开' : '🛠️ 调试'}
+            🤖 流程
           </button>
+          {settings?.debugMode && (
+            <button
+              onClick={() => {
+                if (!settings) return;
+                const next = { ...settings, debugMode: !settings.debugMode };
+                setSettings(next);
+                void saveSettings(next);
+                showToast(next.debugMode ? '已开启调试模式(展开所有步骤)' : '已关闭调试模式');
+              }}
+              title="调试模式已在设置中开启(点击可临时关闭)"
+              className="rounded border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700 transition-colors cursor-pointer"
+            >
+              🐛 调试中
+            </button>
+          )}
           <button
             onClick={() => browser.runtime.openOptionsPage()}
             className="text-xs text-blue-600 hover:underline"
@@ -704,7 +590,6 @@ function App() {
             onInsert={() => {}}
             onConfirmAgent={confirmAgent}
             onSelectTabs={handleSelectTabs}
-            onAnchorClick={handleAnchorClick}
           />
         ))}
         <div ref={messagesEndRef} className="h-px pointer-events-none" />
@@ -769,6 +654,41 @@ function App() {
           onDelete={deleteSession}
           onClose={() => setShowHistory(false)}
         />
+      )}
+
+      {showWorkflowModal && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/30 backdrop-blur-2xs animate-in fade-in">
+          <div className="flex max-h-[85vh] flex-col rounded-t-xl bg-white p-3 shadow-xl border-t border-gray-200 overflow-y-auto">
+            <div className="flex items-center justify-between pb-2 border-b border-gray-100 mb-1">
+              <div className="font-semibold text-gray-900 text-xs flex items-center gap-1.5">
+                <span>🤖</span>
+                <span>快捷流程与自动化遥控</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => {
+                    setShowWorkflowModal(false);
+                    if (typeof browser !== 'undefined' && browser.tabs?.create && browser.runtime?.getURL) {
+                      const url = browser.runtime.getURL('/workbench.html');
+                      void browser.tabs.create({ url });
+                    }
+                  }}
+                  className="rounded border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700 hover:bg-indigo-100 cursor-pointer"
+                >
+                  ⛶ 全屏工作台 ↗
+                </button>
+                <button
+                  onClick={() => setShowWorkflowModal(false)}
+                  className="text-gray-400 hover:text-gray-600 p-1 text-sm rounded cursor-pointer"
+                  title="关闭"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <WorkflowManagerCard />
+          </div>
+        </div>
       )}
     </div>
   );

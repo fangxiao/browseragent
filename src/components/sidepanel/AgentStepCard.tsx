@@ -71,6 +71,54 @@ function summarizeResult(call: ToolCall, result: ToolResult): string {
       return `已找到:${s(d.found)}`;
     case 'sleep':
       return `已等待 ${s(d.sleptMs) || 0}ms`;
+    case 'searchHistory':
+      return `已找到 ${s(d.count) || 0} 条历史记录 (关键词: ${s(d.query)})`;
+    case 'searchBookmarks':
+      return `已找到 ${s(d.count) || (Array.isArray(d.bookmarks) ? d.bookmarks.length : 0)} 个相关书签`;
+    case 'getBookmarksTree':
+      return `已获取书签树结构`;
+    case 'discardTabs':
+      return `已休眠 ${s(d.discardedCount) || 0} 个闲置标签页`;
+    case 'saveWorkspace':
+      return `已保存工作区快照「${s(d.name)}」(${s(d.tabCount)} 个网页)`;
+    case 'listWorkspaces':
+      return `已获取 ${s(d.count) || 0} 个项目工作区快照`;
+    case 'restoreWorkspace':
+      return `已恢复工作区「${s(d.name)}」(${s(d.restoredCount)} 个网页)`;
+    case 'deleteWorkspace':
+      return `已删除工作区「${s(d.name)}」`;
+    case 'getRecentlyClosedTabs':
+      return `已找到 ${s(d.count) || 0} 个最近关闭网页`;
+    case 'restoreClosedTab':
+      return `已重新唤醒找回: ${s(d.title)}`;
+    case 'clearBrowsingData':
+      return `已清理 ${Array.isArray(d.origins) ? d.origins.join(',') : '全局'} 缓存数据`;
+    case 'moveTabsToNewWindow':
+      return `已将 ${s(d.movedCount)} 个标签页分离至新窗口`;
+    case 'setTabZoom':
+      return `缩放比例已调整为 ${s(d.percentage)}`;
+    case 'searchDownloads':
+      return `已检索到 ${s(d.count) || 0} 条下载文件`;
+    case 'startWorkflowRecording':
+      return '已开启网页流程录制';
+    case 'stopWorkflowRecording':
+      return `已结束流程录制，提炼生成 ${s(d.count) || 0} 个步骤`;
+    case 'saveWorkflowRecipe':
+      return `已保存工作流「${s((d as any)?.recipe?.name || (d as any)?.name)}」`;
+    case 'listWorkflowRecipes':
+      return `已获取 ${s(d.count) || 0} 个自动化工作流`;
+    case 'runWorkflowRecipe':
+      return `工作流「${s((d as any)?.name)}」(${(d as any)?.stepCount || 0} 步) 执行完毕`;
+    case 'deleteWorkflowRecipe':
+      return `已删除工作流「${s((d as any)?.name)}」`;
+    case 'hoverElement':
+      return `已悬浮于目标元素`;
+    case 'groupTabs':
+      return `已将 ${s(d.tabCount)} 个标签页归入「${s(d.title)}」分组`;
+    case 'closeTabs':
+      return `已关闭 ${s(d.closedCount)} 个标签页`;
+    case 'activateTab':
+      return `已切换至目标标签页`;
     case 'evaluate':
       return '代码已执行';
     default:
@@ -90,6 +138,33 @@ const TOOL_LABELS: Record<string, string> = {
   getPageInfo: '读取页面信息',
   getPagePerformance: '分析页面性能',
   listTabs: '扫描标签页',
+  groupTabs: '标签页分组',
+  closeTabs: '关闭标签页',
+  activateTab: '切换标签页',
+  discardTabs: '休眠闲置标签',
+  saveWorkspace: '保存工作区快照',
+  listWorkspaces: '获取工作区列表',
+  restoreWorkspace: '恢复工作区',
+  deleteWorkspace: '删除工作区',
+  getRecentlyClosedTabs: '查看最近关闭网页',
+  restoreClosedTab: '找回误关网页',
+  clearBrowsingData: '清理站点缓存',
+  moveTabsToNewWindow: '分离至新窗口',
+  setTabZoom: '调整页面缩放',
+  searchDownloads: '检索下载文件',
+  startWorkflowRecording: '启动流程录制',
+  stopWorkflowRecording: '结束流程录制',
+  saveWorkflowRecipe: '保存工作流配方',
+  listWorkflowRecipes: '获取工作流列表',
+  runWorkflowRecipe: '执行工作流',
+  deleteWorkflowRecipe: '删除工作流',
+  hoverElement: '鼠标悬浮',
+  searchHistory: '检索历史记录',
+  searchBookmarks: '检索书签',
+  getBookmarksTree: '获取书签树',
+  createBookmark: '创建书签',
+  moveBookmark: '移动书签',
+  removeBookmark: '删除书签',
   readPage: '读取页面元素',
   findElements: '查找元素',
   clickElement: '点击',

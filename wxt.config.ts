@@ -17,7 +17,18 @@ export default defineConfig({
   manifest: {
     name: 'AI 浏览器操作助手',
     description: '通用 AI 浏览器智能体:在任意网页通过 AI 操作 DOM,完成数据提取、表单填写、内容发布、研究总结等任务',
-    permissions: ['sidePanel', 'storage', 'tabs', 'scripting'],
+    permissions: [
+      'sidePanel',
+      'storage',
+      'tabs',
+      'scripting',
+      'tabGroups',
+      'bookmarks',
+      'history',
+      'browsingData',
+      'downloads',
+      'sessions',
+    ],
     host_permissions: ['<all_urls>'],
     action: {
       default_title: '打开 AI 侧边栏',

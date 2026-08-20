@@ -30,7 +30,6 @@ interface Props {
   /** agent 消息内嵌安全确认响应 */
   onConfirmAgent: (confirmId: string, approved: boolean) => void;
   onSelectTabs?: (tabs: TabItem[], mode: ComparisonMode) => void;
-  onAnchorClick?: (anchorId: string, title?: string) => void;
 }
 
 export function MessageItem({
@@ -42,7 +41,6 @@ export function MessageItem({
   onInsert,
   onConfirmAgent,
   onSelectTabs,
-  onAnchorClick,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -83,7 +81,6 @@ export function MessageItem({
           onConfirm={onConfirmAgent}
           onCopy={() => void handleCopy()}
           onSelectTabs={onSelectTabs}
-          onAnchorClick={onAnchorClick}
         />
       </div>
     );

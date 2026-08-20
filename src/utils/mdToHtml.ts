@@ -17,7 +17,7 @@ function inline(s: string): string {
   out = out.replace(/\[cite:([a-zA-Z0-9_-]+)\]/g, (_m, anchor) => {
     return `<button type="button" class="cite-anchor-badge inline-flex items-center gap-0.5 mx-1 px-1.5 py-0.5 text-[10px] font-medium text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded cursor-pointer transition-colors" data-anchor="${anchor}" title="点击在网页中定位并高亮此段落">📍 ${anchor}</button>`;
   });
-  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
   out = out.replace(/`([^`]+)`/g, '<code>$1</code>');

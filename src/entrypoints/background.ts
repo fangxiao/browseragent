@@ -11,7 +11,12 @@ import { fetchAndSyncCloudConfig } from '@/utils/ai/remoteConfig';
 import type { ToolCall, ToolResult } from '@/utils/domTools/types';
 import type { AgentRunPayload, AgentEvent } from '@/utils/ai/agentTypes';
 import { markdownToWechatHtml } from '@/utils/wechat/styleInliner';
-import { markdownToFeishuHtml } from '@/utils/feishu/blockFormatter';
+import {
+  saveWorkflowRecipe,
+  listWorkflowRecipes,
+  getWorkflowRecipe,
+  deleteWorkflowRecipe,
+} from '@/utils/workflow/storage';
 
 export default defineBackground(() => {
   console.log('[ai-agent] background service worker started');
@@ -67,6 +72,19 @@ export default defineBackground(() => {
         return browser.sidePanel
           .open({ windowId: (globalThis as any).currentWindowId })
           .catch(() => browser.action?.openPopup?.());
+      }
+      if ((msg as any)?.type === 'WORKFLOW:OPEN_URL') {
+        const targetUrl = (msg as any).url;
+        const isBlank = (msg as any).target === '_blank';
+        if (isBlank) {
+          return browser.tabs.create({ url: targetUrl, active: true }).then((tab) => ({ ok: true, tabId: tab.id }));
+        }
+        return browser.tabs.query({ active: true, currentWindow: true }).then(([activeTab]) => {
+          if (activeTab?.id) {
+            return browser.tabs.update(activeTab.id, { url: targetUrl }).then(() => ({ ok: true }));
+          }
+          return browser.tabs.create({ url: targetUrl, active: true }).then((tab) => ({ ok: true, tabId: tab.id }));
+        });
       }
       return undefined;
     },
@@ -616,111 +634,6 @@ export default defineBackground(() => {
             } catch {
               /* 继续走下方完整 content script 注入 */
             }
-          } else if (call.name === 'getArticleOutline') {
-            try {
-              const selector = call.args?.selector ? String(call.args.selector) : '';
-              const execRes = await browser.scripting.executeScript({
-                target: { tabId },
-                func: (sel) => {
-                  let container: HTMLElement | null = sel ? document.querySelector<HTMLElement>(sel) : null;
-                  if (!container) {
-                    container = document.querySelector<HTMLElement>(
-                      'article, [role="article"], .article-content, .markdown-body, .post-content, .entry-content, main, #content, .content, body',
-                    ) || document.body;
-                  }
-                  const headingEls = Array.from(container.querySelectorAll<HTMLElement>('h1, h2, h3, h4, p, blockquote'));
-                  const outline: Array<{ anchorId: string; level: number; tag: string; title: string; snippet: string }> = [];
-                  let idx = 1;
-                  let totalWords = 0;
-                  for (const el of headingEls) {
-                    const tag = el.tagName.toLowerCase();
-                    const txt = (el.textContent || '').trim();
-                    if (!txt) continue;
-                    totalWords += txt.length;
-                    const isHeading = /^h[1-4]$/.test(tag);
-                    const isImportantPara = tag === 'p' && txt.length > 50 && outline.length < 40;
-                    if (isHeading || isImportantPara) {
-                      let anchorId = el.getAttribute('data-agent-anchor');
-                      if (!anchorId) {
-                        anchorId = `anchor-${idx++}`;
-                        el.setAttribute('data-agent-anchor', anchorId);
-                      }
-                      outline.push({
-                        anchorId,
-                        level: isHeading ? parseInt(tag.slice(1), 10) : 0,
-                        tag,
-                        title: isHeading ? txt : `${txt.slice(0, 36)}…`,
-                        snippet: txt.slice(0, 120),
-                      });
-                    }
-                  }
-                  return {
-                    title: document.title || '',
-                    url: location.href,
-                    totalSections: outline.length,
-                    totalWords,
-                    outline,
-                  };
-                },
-                args: [selector],
-              });
-              if (execRes?.[0]?.result) {
-                return { ok: true, data: execRes[0].result };
-              }
-            } catch {
-              /* 继续走下方完整 content script 注入 */
-            }
-          } else if (call.name === 'highlightAndScrollTo') {
-            try {
-              const anchorId = String(call.args?.anchorId ?? '').trim();
-              const selector = String(call.args?.selector ?? '').trim();
-              const textSnippet = String(call.args?.textSnippet ?? '').trim();
-              const execRes = await browser.scripting.executeScript({
-                target: { tabId },
-                func: (aid, sel, snippet) => {
-                  let targetEl: HTMLElement | null = null;
-                  if (aid) {
-                    targetEl = document.querySelector<HTMLElement>(`[data-agent-anchor="${aid}"], #${aid}`);
-                  }
-                  if (!targetEl && sel) {
-                    try { targetEl = document.querySelector<HTMLElement>(sel); } catch {}
-                  }
-                  if (!targetEl && snippet) {
-                    const candidates = Array.from(document.querySelectorAll<HTMLElement>('p, h1, h2, h3, h4, li, blockquote, div'));
-                    targetEl = candidates.find((c) => (c.textContent || '').includes(snippet)) || null;
-                  }
-                  if (!targetEl) return null;
-                  targetEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-                  if (!document.getElementById('ai-agent-pulse-style')) {
-                    const style = document.createElement('style');
-                    style.id = 'ai-agent-pulse-style';
-                    style.textContent = `
-                      @keyframes aiAgentPulseGlow {
-                        0% { outline: 3px solid #f59e0b; box-shadow: 0 0 16px rgba(245, 158, 11, 0.6); background-color: rgba(254, 240, 138, 0.45); }
-                        50% { outline: 4px solid #d97706; box-shadow: 0 0 24px rgba(245, 158, 11, 0.85); background-color: rgba(254, 240, 138, 0.65); }
-                        100% { outline: 2px solid transparent; box-shadow: none; background-color: transparent; }
-                      }
-                      .ai-agent-pulse-target {
-                        animation: aiAgentPulseGlow 2.5s ease-out forwards !important;
-                        border-radius: 4px !important;
-                      }
-                    `;
-                    document.head.appendChild(style);
-                  }
-                  targetEl.classList.remove('ai-agent-pulse-target');
-                  void targetEl.offsetWidth;
-                  targetEl.classList.add('ai-agent-pulse-target');
-                  setTimeout(() => { targetEl?.classList.remove('ai-agent-pulse-target'); }, 2600);
-                  return { scrolled: true, anchorId: aid || 'matched' };
-                },
-                args: [anchorId, selector, textSnippet],
-              });
-              if (execRes?.[0]?.result) {
-                return { ok: true, data: execRes[0].result };
-              }
-            } catch {
-              /* 继续走下方完整 content script 注入 */
-            }
           } else if (call.name === 'writeWechatDraft') {
             try {
               const title = String(call.args?.title ?? '').trim();
@@ -885,14 +798,34 @@ export default defineBackground(() => {
                   const currentWindow = call.args?.currentWindow !== false;
                   const queryInfo: Record<string, unknown> = currentWindow ? { currentWindow: true } : {};
                   const tabs = await browser.tabs.query(queryInfo);
+                  const groupsMap = new Map<number, { title: string; color: string }>();
+                  const chromeGlobal = (globalThis as any).chrome;
+                  if (typeof chromeGlobal?.tabGroups?.query === 'function') {
+                    try {
+                      const groups = await chromeGlobal.tabGroups.query(queryInfo);
+                      for (const g of groups) {
+                        if (g.id != null) groupsMap.set(g.id, { title: g.title || '', color: g.color || 'blue' });
+                      }
+                    } catch {
+                      /* 忽略 tabGroups 查询异常 */
+                    }
+                  }
                   const validTabs = tabs
                     .filter((t) => t.id != null && t.url && /^https?:\/\//i.test(t.url))
-                    .map((t) => ({
-                      tabId: t.id!,
-                      title: t.title ?? '未命名标签',
-                      url: t.url!,
-                      active: t.active ?? false,
-                    }));
+                    .map((t) => {
+                      const gid = (t as any).groupId;
+                      const gInfo = gid != null && gid > -1 ? groupsMap.get(gid) : undefined;
+                      return {
+                        tabId: t.id!,
+                        title: t.title ?? '未命名标签',
+                        url: t.url!,
+                        active: t.active ?? false,
+                        pinned: t.pinned ?? false,
+                        groupId: gid != null && gid > -1 ? gid : undefined,
+                        groupTitle: gInfo?.title || undefined,
+                        groupColor: gInfo?.color || undefined,
+                      };
+                    });
                   return {
                     ok: true,
                     data: {
@@ -905,7 +838,917 @@ export default defineBackground(() => {
                 }
               }
 
-              // 2. navigate 由 background 经 tabs.update 执行
+              // 2. groupTabs 标签页自动分组
+              if (call.name === 'groupTabs') {
+                try {
+                  const tabIds = (call.args?.tabIds as number[]) || [];
+                  const title = String(call.args?.title ?? '').trim();
+                  const color = (call.args?.color as any) || 'blue';
+                  const collapsed = Boolean(call.args?.collapsed);
+                  if (tabIds.length === 0) {
+                    return { ok: false, error: '未指定要分组的标签页 tabIds' };
+                  }
+                  let groupId: number | undefined;
+                  const chromeGlobal = (globalThis as any).chrome;
+                  if (typeof chromeGlobal?.tabs?.group === 'function') {
+                    groupId = await chromeGlobal.tabs.group({ tabIds });
+                    if (groupId != null && typeof chromeGlobal?.tabGroups?.update === 'function') {
+                      await chromeGlobal.tabGroups.update(groupId, {
+                        title,
+                        color,
+                        collapsed,
+                      });
+                    }
+                  } else if (typeof (browser.tabs as any)?.group === 'function') {
+                    groupId = await (browser.tabs as any).group({ tabIds });
+                  }
+                  return {
+                    ok: true,
+                    data: {
+                      groupId,
+                      title,
+                      color,
+                      tabCount: tabIds.length,
+                      note: `🎉 已成功将 ${tabIds.length} 个标签页归入「${title}」分组！`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `标签页分组失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 3. closeTabs 批量关闭标签页
+              if (call.name === 'closeTabs') {
+                try {
+                  const rawTabIds = (call.args?.tabIds as number[]) || [];
+                  const tabIds = rawTabIds.map((id) => Number(id)).filter((id) => !isNaN(id) && id > 0);
+                  if (tabIds.length === 0) {
+                    return { ok: false, error: '未指定要关闭的标签页 tabIds' };
+                  }
+                  let closedCount = 0;
+                  const closedTabIds: number[] = [];
+                  for (const tid of tabIds) {
+                    try {
+                      await browser.tabs.remove(tid);
+                      closedCount++;
+                      closedTabIds.push(tid);
+                    } catch {
+                      // 忽略已关闭或不存在的标签页
+                    }
+                  }
+                  return {
+                    ok: true,
+                    data: {
+                      closedCount,
+                      closedTabIds,
+                      note: `🗑️ 已成功关闭 ${closedCount} 个标签页，释放系统内存`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `关闭标签页失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 4. activateTab 聚焦激活标签页
+              if (call.name === 'activateTab') {
+                try {
+                  const tabId = Number(call.args?.tabId);
+                  if (!tabId) return { ok: false, error: '未指定目标 tabId' };
+                  const tab = await browser.tabs.get(tabId);
+                  await browser.tabs.update(tabId, { active: true });
+                  if (tab.windowId != null) {
+                    await browser.windows.update(tab.windowId, { focused: true });
+                  }
+                  return {
+                    ok: true,
+                    data: { tabId, title: tab.title, url: tab.url, note: `🎯 已切换至标签页: ${tab.title}` },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `切换标签页失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 5. getBookmarksTree 读取书签树
+              if (call.name === 'getBookmarksTree') {
+                try {
+                  const parentId = call.args?.parentId ? String(call.args.parentId) : undefined;
+                  const maxDepth = Number(call.args?.maxDepth) || 4;
+                  let rawTree: any[] = [];
+                  if (parentId) {
+                    rawTree = await browser.bookmarks.getSubTree(parentId);
+                  } else {
+                    rawTree = await browser.bookmarks.getTree();
+                  }
+                  const simplifyNode = (node: any, depth: number): any => {
+                    if (!node) return null;
+                    const isFolder = !node.url && (Array.isArray(node.children) || node.childrenCount != null);
+                    const res: any = {
+                      id: node.id,
+                      title: node.title || (isFolder ? '未命名文件夹' : '未命名书签'),
+                    };
+                    if (node.url) res.url = node.url;
+                    if (node.dateAdded) res.dateAdded = new Date(node.dateAdded).toISOString().split('T')[0];
+                    if (isFolder && depth < maxDepth && Array.isArray(node.children)) {
+                      res.children = node.children
+                        .map((c: any) => simplifyNode(c, depth + 1))
+                        .filter(Boolean);
+                    } else if (isFolder && Array.isArray(node.children)) {
+                      res.itemCount = node.children.length;
+                    }
+                    return res;
+                  };
+                  const tree = rawTree.map((r) => simplifyNode(r, 1)).filter(Boolean);
+                  return {
+                    ok: true,
+                    data: {
+                      tree,
+                      note: '获取书签树成功',
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `获取书签树失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 6. searchBookmarks 关键词搜索书签
+              if (call.name === 'searchBookmarks') {
+                try {
+                  const query = String(call.args?.query ?? '').trim();
+                  if (!query) return { ok: false, error: '未指定搜索关键词 query' };
+                  const items = await browser.bookmarks.search(query);
+                  const results = items.slice(0, 30).map((b) => ({
+                    id: b.id,
+                    title: b.title,
+                    url: b.url,
+                    isFolder: !b.url,
+                    parentId: b.parentId,
+                  }));
+                  return {
+                    ok: true,
+                    data: {
+                      totalCount: items.length,
+                      results,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `搜索书签失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 7. createBookmark 创建书签/文件夹
+              if (call.name === 'createBookmark') {
+                try {
+                  const title = String(call.args?.title ?? '').trim();
+                  const url = call.args?.url ? String(call.args.url).trim() : undefined;
+                  const parentId = call.args?.parentId ? String(call.args.parentId).trim() : undefined;
+                  const index = call.args?.index != null ? Number(call.args.index) : undefined;
+                  if (!title) return { ok: false, error: '未指定书签标题 title' };
+                  const created = await browser.bookmarks.create({
+                    title,
+                    url,
+                    parentId,
+                    index,
+                  });
+                  return {
+                    ok: true,
+                    data: {
+                      id: created.id,
+                      title: created.title,
+                      url: created.url,
+                      parentId: created.parentId,
+                      isFolder: !created.url,
+                      note: created.url ? `🔖 已成功创建书签: ${title}` : `📁 已成功创建书签文件夹: ${title}`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `创建书签失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 8. moveBookmark 移动/重命名书签
+              if (call.name === 'moveBookmark') {
+                try {
+                  const id = String(call.args?.id ?? '').trim();
+                  const parentId = call.args?.parentId ? String(call.args.parentId).trim() : undefined;
+                  const index = call.args?.index != null ? Number(call.args.index) : undefined;
+                  const title = call.args?.title ? String(call.args.title).trim() : undefined;
+                  if (!id) return { ok: false, error: '未指定书签 id' };
+                  if (parentId != null || index != null) {
+                    await browser.bookmarks.move(id, { parentId, index });
+                  }
+                  if (title) {
+                    await browser.bookmarks.update(id, { title });
+                  }
+                  return {
+                    ok: true,
+                    data: { id, parentId, title, note: `✨ 已成功更新/移动书签 ID: ${id}` },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `移动/修改书签失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 9. removeBookmark 删除书签/文件夹
+              if (call.name === 'removeBookmark') {
+                try {
+                  const id = String(call.args?.id ?? '').trim();
+                  const isFolder = Boolean(call.args?.isFolder);
+                  if (!id) return { ok: false, error: '未指定要删除的书签 id' };
+                  if (isFolder && typeof browser.bookmarks.removeTree === 'function') {
+                    await browser.bookmarks.removeTree(id);
+                  } else {
+                    await browser.bookmarks.remove(id);
+                  }
+                  return {
+                    ok: true,
+                    data: { id, isFolder, note: `🗑️ 已成功删除书签${isFolder ? '文件夹' : ''} (ID: ${id})` },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `删除书签失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 10. searchHistory 模糊检索历史记录
+              if (call.name === 'searchHistory') {
+                try {
+                  const text = call.args?.text ? String(call.args.text).trim() : '';
+                  const startTime = call.args?.startTime != null ? Number(call.args.startTime) : Date.now() - 7 * 86400 * 1000;
+                  const endTime = call.args?.endTime != null ? Number(call.args.endTime) : undefined;
+                  const maxResults = Math.min(Number(call.args?.maxResults) || 25, 100);
+                  const items = await browser.history.search({
+                    text,
+                    startTime,
+                    endTime,
+                    maxResults,
+                  });
+                  const historyList = items.map((h) => ({
+                    id: h.id,
+                    title: h.title || '未命名网页',
+                    url: h.url || '',
+                    visitCount: h.visitCount || 1,
+                    lastVisitTime: h.lastVisitTime ? new Date(h.lastVisitTime).toLocaleString('zh-CN') : '',
+                  }));
+                  return {
+                    ok: true,
+                    data: {
+                      count: historyList.length,
+                      history: historyList,
+                      query: text || '最近全部',
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `检索历史记录失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 11. discardTabs 休眠闲置标签页释放内存
+              if (call.name === 'discardTabs') {
+                try {
+                  let targetTabIds = (call.args?.tabIds as number[]) || [];
+                  if (targetTabIds.length === 0) {
+                    const allTabs = await browser.tabs.query({ currentWindow: true, active: false });
+                    targetTabIds = allTabs.map((t) => t.id!).filter(Boolean);
+                  }
+                  const discardedList: Array<{ id: number; title: string; url: string }> = [];
+                  const chromeGlobal = (globalThis as any).chrome;
+                  for (const tid of targetTabIds) {
+                    try {
+                      const tab = await browser.tabs.get(tid);
+                      if (typeof chromeGlobal?.tabs?.discard === 'function') {
+                        await chromeGlobal.tabs.discard(tid);
+                      } else if (typeof (browser.tabs as any)?.discard === 'function') {
+                        await (browser.tabs as any).discard(tid);
+                      }
+                      discardedList.push({ id: tid, title: tab.title || '标签页', url: tab.url || '' });
+                    } catch {
+                      /* 忽略单个 tab 休眠失败 */
+                    }
+                  }
+                  return {
+                    ok: true,
+                    data: {
+                      discardedCount: discardedList.length,
+                      discardedTabs: discardedList,
+                      note: `💤 已成功休眠 ${discardedList.length} 个闲置标签页，释放系统内存`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `休眠标签页失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 12. saveWorkspace 保存项目工作区快照
+              if (call.name === 'saveWorkspace') {
+                try {
+                  const name = String(call.args?.name ?? '').trim();
+                  if (!name) return { ok: false, error: '请提供工作区名称' };
+                  const targetTabIds = (call.args?.tabIds as number[]) || [];
+                  const closeAfterSave = Boolean(call.args?.closeAfterSave);
+
+                  const allWindowTabs = await browser.tabs.query({ currentWindow: true });
+                  const selectedTabs = targetTabIds.length > 0
+                    ? allWindowTabs.filter((t) => targetTabIds.includes(t.id!))
+                    : allWindowTabs.filter((t) => t.url && !t.url.startsWith('chrome-extension://'));
+
+                  const chromeGlobal = (globalThis as any).chrome;
+                  const groupMap = new Map<number, { title?: string; color?: string }>();
+                  if (typeof chromeGlobal?.tabGroups?.get === 'function') {
+                    for (const t of selectedTabs) {
+                      const gid = (t as any).groupId;
+                      if (gid != null && gid > -1 && !groupMap.has(gid)) {
+                        try {
+                          const gInfo = await chromeGlobal.tabGroups.get(gid);
+                          if (gInfo) groupMap.set(gid, { title: gInfo.title, color: gInfo.color });
+                        } catch {
+                          /* ignore */
+                        }
+                      }
+                    }
+                  }
+
+                  const snapshotTabs = selectedTabs.map((t) => {
+                    const gid = (t as any).groupId;
+                    const gInfo = gid != null && gid > -1 ? groupMap.get(gid) : undefined;
+                    return {
+                      title: t.title || '未命名标签',
+                      url: t.url!,
+                      pinned: t.pinned ?? false,
+                      groupTitle: gInfo?.title,
+                      groupColor: gInfo?.color,
+                    };
+                  });
+
+                  const WORKSPACE_KEY = 'workspaces_store';
+                  const storageRes = (await browser.storage.local.get(WORKSPACE_KEY)) as { [WORKSPACE_KEY]?: Record<string, any> };
+                  const store = storageRes[WORKSPACE_KEY] || {};
+
+                  const wsId = `ws_${Date.now()}`;
+                  store[wsId] = {
+                    id: wsId,
+                    name,
+                    createdAt: Date.now(),
+                    tabs: snapshotTabs,
+                  };
+
+                  await browser.storage.local.set({ [WORKSPACE_KEY]: store });
+
+                  if (closeAfterSave && selectedTabs.length > 0) {
+                    const toClose = selectedTabs.map((t) => t.id!).filter(Boolean);
+                    await browser.tabs.remove(toClose);
+                  }
+
+                  return {
+                    ok: true,
+                    data: {
+                      workspaceId: wsId,
+                      name,
+                      tabCount: snapshotTabs.length,
+                      closedAfterSave: closeAfterSave,
+                      note: `💾 已成功将 ${snapshotTabs.length} 个标签页保存为工作区快照「${name}」！`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `保存工作区失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 13. listWorkspaces 获取已保存工作区快照
+              if (call.name === 'listWorkspaces') {
+                try {
+                  const WORKSPACE_KEY = 'workspaces_store';
+                  const storageRes = (await browser.storage.local.get(WORKSPACE_KEY)) as { [WORKSPACE_KEY]?: Record<string, any> };
+                  const store = storageRes[WORKSPACE_KEY] || {};
+                  const list = Object.values(store).map((ws: any) => ({
+                    id: ws.id,
+                    name: ws.name,
+                    createdAt: new Date(ws.createdAt).toLocaleString('zh-CN'),
+                    tabCount: Array.isArray(ws.tabs) ? ws.tabs.length : 0,
+                    tabsPreview: Array.isArray(ws.tabs)
+                      ? ws.tabs.slice(0, 5).map((t: any) => `[${t.title}](${t.url})`).join('、') + (ws.tabs.length > 5 ? '…' : '')
+                      : '',
+                  }));
+                  return {
+                    ok: true,
+                    data: {
+                      count: list.length,
+                      workspaces: list,
+                      note: `已获取 ${list.length} 个项目工作区快照`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `获取工作区列表失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 14. restoreWorkspace 还原工作区快照
+              if (call.name === 'restoreWorkspace') {
+                try {
+                  const nameOrId = String(call.args?.nameOrId ?? '').trim().toLowerCase();
+                  const inNewWindow = Boolean(call.args?.inNewWindow);
+                  if (!nameOrId) return { ok: false, error: '请指定要还原的工作区名称或 ID' };
+
+                  const WORKSPACE_KEY = 'workspaces_store';
+                  const storageRes = (await browser.storage.local.get(WORKSPACE_KEY)) as { [WORKSPACE_KEY]?: Record<string, any> };
+                  const store = storageRes[WORKSPACE_KEY] || {};
+                  const targetWs = Object.values(store).find(
+                    (ws: any) => ws.id === nameOrId || String(ws.name).toLowerCase().includes(nameOrId),
+                  ) as any;
+
+                  if (!targetWs || !Array.isArray(targetWs.tabs) || targetWs.tabs.length === 0) {
+                    return { ok: false, error: `未找到名为「${nameOrId}」的工作区快照或该工作区无可用网页` };
+                  }
+
+                  let windowId: number | undefined;
+                  const createdTabIds: number[] = [];
+                  const groupMap = new Map<string, number[]>(); // groupTitle -> tabIds
+
+                  for (let i = 0; i < targetWs.tabs.length; i++) {
+                    const item = targetWs.tabs[i];
+                    if (inNewWindow && i === 0) {
+                      const win = await browser.windows.create({ url: item.url });
+                      windowId = win?.id;
+                      if (win?.tabs?.[0]?.id) createdTabIds.push(win.tabs[0].id);
+                    } else {
+                      const tab = await browser.tabs.create({
+                        url: item.url,
+                        windowId,
+                        pinned: Boolean(item.pinned),
+                        active: i === 0,
+                      });
+                      if (tab.id) createdTabIds.push(tab.id);
+                    }
+
+                    if (item.groupTitle && createdTabIds.length > 0) {
+                      const lastId = createdTabIds[createdTabIds.length - 1]!;
+                      const arr = groupMap.get(item.groupTitle) || [];
+                      arr.push(lastId);
+                      groupMap.set(item.groupTitle, arr);
+                    }
+                  }
+
+                  // 还原标签组
+                  const chromeGlobal = (globalThis as any).chrome;
+                  if (typeof chromeGlobal?.tabs?.group === 'function') {
+                    for (const [gTitle, tIds] of groupMap.entries()) {
+                      try {
+                        const gid = await chromeGlobal.tabs.group({ tabIds: tIds });
+                        if (gid != null && typeof chromeGlobal?.tabGroups?.update === 'function') {
+                          const refItem = targetWs.tabs.find((t: any) => t.groupTitle === gTitle);
+                          await chromeGlobal.tabGroups.update(gid, {
+                            title: gTitle,
+                            color: refItem?.groupColor || 'blue',
+                          });
+                        }
+                      } catch {
+                        /* 忽略分组失败 */
+                      }
+                    }
+                  }
+
+                  return {
+                    ok: true,
+                    data: {
+                      name: targetWs.name,
+                      restoredCount: targetWs.tabs.length,
+                      inNewWindow,
+                      note: `🎉 已成功恢复工作区「${targetWs.name}」中的 ${targetWs.tabs.length} 个网页！`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `还原工作区失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 15. deleteWorkspace 删除工作区快照
+              if (call.name === 'deleteWorkspace') {
+                try {
+                  const nameOrId = String(call.args?.nameOrId ?? '').trim().toLowerCase();
+                  if (!nameOrId) return { ok: false, error: '请指定要删除的工作区名称或 ID' };
+                  const WORKSPACE_KEY = 'workspaces_store';
+                  const storageRes = (await browser.storage.local.get(WORKSPACE_KEY)) as { [WORKSPACE_KEY]?: Record<string, any> };
+                  const store = storageRes[WORKSPACE_KEY] || {};
+                  const targetKey = Object.keys(store).find(
+                    (k) => k === nameOrId || String(store[k]?.name).toLowerCase() === nameOrId,
+                  );
+                  if (!targetKey) {
+                    return { ok: false, error: `未找到要删除的工作区「${nameOrId}」` };
+                  }
+                  const wsName = store[targetKey]?.name || nameOrId;
+                  delete store[targetKey];
+                  await browser.storage.local.set({ [WORKSPACE_KEY]: store });
+                  return {
+                    ok: true,
+                    data: { name: wsName, note: `🗑️ 已成功删除工作区「${wsName}」` },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `删除工作区失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 16. getRecentlyClosedTabs 获取最近关闭的标签页
+              if (call.name === 'getRecentlyClosedTabs') {
+                try {
+                  const maxResults = Math.min(Number(call.args?.maxResults) || 15, 25);
+                  let sessionsList: any[] = [];
+                  const chromeGlobal = (globalThis as any).chrome;
+                  if (typeof chromeGlobal?.sessions?.getRecentlyClosed === 'function') {
+                    sessionsList = await chromeGlobal.sessions.getRecentlyClosed({ maxResults });
+                  } else if (typeof (browser as any)?.sessions?.getRecentlyClosed === 'function') {
+                    sessionsList = await (browser as any).sessions.getRecentlyClosed({ maxResults });
+                  }
+                  const closedTabs: any[] = [];
+                  for (const s of sessionsList) {
+                    if (s.tab) {
+                      closedTabs.push({
+                        sessionId: s.tab.sessionId,
+                        title: s.tab.title || '未命名网页',
+                        url: s.tab.url || '',
+                        lastModified: s.lastModified ? new Date(s.lastModified * 1000).toLocaleTimeString('zh-CN') : '',
+                      });
+                    } else if (s.window && Array.isArray(s.window.tabs)) {
+                      for (const wt of s.window.tabs) {
+                        closedTabs.push({
+                          sessionId: wt.sessionId,
+                          title: wt.title || '未命名网页',
+                          url: wt.url || '',
+                          windowId: s.window.sessionId,
+                          lastModified: s.lastModified ? new Date(s.lastModified * 1000).toLocaleTimeString('zh-CN') : '',
+                        });
+                      }
+                    }
+                  }
+                  return {
+                    ok: true,
+                    data: {
+                      count: closedTabs.length,
+                      closedTabs,
+                      note: `已找到 ${closedTabs.length} 个最近关闭的网页`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `获取最近关闭网页失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 17. restoreClosedTab 重新秒级唤醒打开误关网页
+              if (call.name === 'restoreClosedTab') {
+                try {
+                  const sessionId = call.args?.sessionId ? String(call.args.sessionId) : undefined;
+                  const chromeGlobal = (globalThis as any).chrome;
+                  let restoredSession: any;
+                  if (typeof chromeGlobal?.sessions?.restore === 'function') {
+                    restoredSession = await chromeGlobal.sessions.restore(sessionId);
+                  } else if (typeof (browser as any)?.sessions?.restore === 'function') {
+                    restoredSession = await (browser as any).sessions.restore(sessionId);
+                  }
+                  const title = restoredSession?.tab?.title || '目标网页';
+                  return {
+                    ok: true,
+                    data: {
+                      title,
+                      note: `🔄 已成功找回并重新打开网页: ${title}`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `恢复网页失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 18. clearBrowsingData 精细化定向清理缓存/Cookie
+              if (call.name === 'clearBrowsingData') {
+                try {
+                  const origins = Array.isArray(call.args?.origins) ? (call.args.origins as string[]) : undefined;
+                  const dataTypes = Array.isArray(call.args?.dataTypes) ? (call.args.dataTypes as string[]) : ['cache', 'cookies'];
+                  const since = Number(call.args?.timeSince) || 0;
+
+                  const dataRemoval: Record<string, boolean> = {};
+                  for (const t of dataTypes) {
+                    if (t === 'cache') dataRemoval.cache = true;
+                    if (t === 'cookies') dataRemoval.cookies = true;
+                    if (t === 'localStorage') dataRemoval.localStorage = true;
+                    if (t === 'history') dataRemoval.history = true;
+                  }
+                  if (Object.keys(dataRemoval).length === 0) {
+                    dataRemoval.cache = true;
+                    dataRemoval.cookies = true;
+                  }
+
+                  const chromeGlobal = (globalThis as any).chrome;
+                  if (origins && origins.length > 0) {
+                    if (typeof chromeGlobal?.browsingData?.remove === 'function') {
+                      await chromeGlobal.browsingData.remove({ origins, since }, dataRemoval);
+                    } else if (typeof (browser as any)?.browsingData?.remove === 'function') {
+                      await (browser as any).browsingData.remove({ origins, since }, dataRemoval);
+                    }
+                  } else {
+                    if (typeof chromeGlobal?.browsingData?.remove === 'function') {
+                      await chromeGlobal.browsingData.remove({ since }, dataRemoval);
+                    } else if (typeof (browser as any)?.browsingData?.remove === 'function') {
+                      await (browser as any).browsingData.remove({ since }, dataRemoval);
+                    }
+                  }
+
+                  return {
+                    ok: true,
+                    data: {
+                      clearedTypes: Object.keys(dataRemoval),
+                      origins: origins || ['全局'],
+                      note: `🧹 已成功清理 ${origins ? origins.join(', ') : '全局'} 的 ${Object.keys(dataRemoval).join('/')} 数据`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `清理浏览数据失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 19. moveTabsToNewWindow 移动标签页至新窗口
+              if (call.name === 'moveTabsToNewWindow') {
+                try {
+                  const tabIds = (call.args?.tabIds as number[]) || [];
+                  const focused = call.args?.focused !== false;
+                  if (tabIds.length === 0) return { ok: false, error: '未指定要移出的 tabIds' };
+                  const [first, ...rest] = tabIds;
+                  const win = await browser.windows.create({ tabId: first, focused });
+                  const winId = win?.id;
+                  if (rest.length > 0 && winId != null) {
+                    await browser.tabs.move(rest, { windowId: winId, index: -1 });
+                  }
+                  return {
+                    ok: true,
+                    data: {
+                      movedCount: tabIds.length,
+                      windowId: winId,
+                      note: `🪟 已将 ${tabIds.length} 个标签页分离至新窗口`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `移动标签页至新窗口失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 20. setTabZoom 设置页面缩放比例
+              if (call.name === 'setTabZoom') {
+                try {
+                  const targetTabId = Number(call.args?.tabId) || payload.tabId;
+                  const zoomFactor = Number(call.args?.zoomFactor) || 1.0;
+                  await browser.tabs.setZoom(targetTabId, zoomFactor);
+                  return {
+                    ok: true,
+                    data: {
+                      tabId: targetTabId,
+                      zoomFactor,
+                      percentage: `${Math.round(zoomFactor * 100)}%`,
+                      note: `🔍 已将页面缩放调整为 ${Math.round(zoomFactor * 100)}%`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `设置缩放失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 21. searchDownloads 检索下载历史
+              if (call.name === 'searchDownloads') {
+                try {
+                  const query = call.args?.query ? String(call.args.query).trim() : undefined;
+                  const mime = call.args?.mimeType ? String(call.args.mimeType).trim() : undefined;
+                  const limit = Math.min(Number(call.args?.limit) || 20, 50);
+
+                  const chromeGlobal = (globalThis as any).chrome;
+                  let rawItems: any[] = [];
+                  if (typeof chromeGlobal?.downloads?.search === 'function') {
+                    rawItems = await chromeGlobal.downloads.search({ query: query ? [query] : undefined, mime, limit });
+                  } else if (typeof (browser as any)?.downloads?.search === 'function') {
+                    rawItems = await (browser as any).downloads.search({ query: query ? [query] : undefined, mime, limit });
+                  }
+
+                  const downloadList = rawItems.map((item) => ({
+                    id: item.id,
+                    filename: item.filename ? item.filename.split('/').pop() : '未命名文件',
+                    fullPath: item.filename || '',
+                    url: item.url || '',
+                    fileSize: item.fileSize ? `${(item.fileSize / 1024 / 1024).toFixed(2)} MB` : '未知大小',
+                    state: item.state || 'complete',
+                    endTime: item.endTime ? new Date(item.endTime).toLocaleString('zh-CN') : '',
+                  }));
+
+                  return {
+                    ok: true,
+                    data: {
+                      count: downloadList.length,
+                      downloads: downloadList,
+                      query: query || '全部文件',
+                      note: `已检索到 ${downloadList.length} 条下载记录`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `检索下载记录失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 22. startWorkflowRecording 开启流程录制
+              if (call.name === 'startWorkflowRecording') {
+                try {
+                  const targetTabId = Number(call.args?.tabId) || payload.tabId;
+                  const res = await browser.tabs.sendMessage(targetTabId, { type: 'WORKFLOW:START_RECORDING' });
+                  return {
+                    ok: true,
+                    data: { status: 'recording', tabId: targetTabId, note: res?.message || '🔴 已开启网页流程录制' },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `开启录制失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 23. stopWorkflowRecording 结束流程录制
+              if (call.name === 'stopWorkflowRecording') {
+                try {
+                  const targetTabId = Number(call.args?.tabId) || payload.tabId;
+                  const res = await browser.tabs.sendMessage(targetTabId, { type: 'WORKFLOW:STOP_RECORDING' });
+                  return {
+                    ok: true,
+                    data: {
+                      steps: res?.steps || [],
+                      count: res?.steps?.length || 0,
+                      actionCount: res?.actionCount || 0,
+                      note: `已成功结束录制，提炼生成 ${res?.steps?.length || 0} 个步骤`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `结束录制失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 24. saveWorkflowRecipe 保存工作流配方
+              if (call.name === 'saveWorkflowRecipe') {
+                try {
+                  const name = String(call.args?.name ?? '').trim();
+                  const steps = (call.args?.steps as any[]) || [];
+                  const description = call.args?.description ? String(call.args.description) : undefined;
+                  const urlPattern = call.args?.urlPattern ? String(call.args.urlPattern) : undefined;
+                  if (!name || steps.length === 0) {
+                    return { ok: false, error: '工作流名称与步骤列表不能为空' };
+                  }
+                  const saved = await saveWorkflowRecipe(name, steps, { description, urlPattern });
+                  return {
+                    ok: true,
+                    data: {
+                      recipe: saved,
+                      note: `💾 已成功保存工作流「${name}」(${steps.length} 个步骤)`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `保存工作流失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 25. listWorkflowRecipes 获取工作流列表
+              if (call.name === 'listWorkflowRecipes') {
+                try {
+                  const recipes = await listWorkflowRecipes();
+                  return {
+                    ok: true,
+                    data: {
+                      count: recipes.length,
+                      recipes: recipes.map((r) => ({
+                        id: r.id,
+                        name: r.name,
+                        description: r.description,
+                        stepCount: r.steps.length,
+                        stepsPreview: r.steps.map((s) => s.description).join(' ➔ '),
+                        updatedAt: new Date(r.updatedAt).toLocaleString('zh-CN'),
+                      })),
+                      note: `已获取 ${recipes.length} 个自动化工作流`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `获取工作流列表失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 26. runWorkflowRecipe 回放执行工作流配方
+              if (call.name === 'runWorkflowRecipe') {
+                try {
+                  const nameOrId = String(call.args?.nameOrId ?? '').trim();
+                  const targetTabId = Number(call.args?.tabId) || payload.tabId;
+                  const recipe = await getWorkflowRecipe(nameOrId);
+                  if (!recipe || recipe.steps.length === 0) {
+                    return { ok: false, error: `未找到工作流「${nameOrId}」或该工作流无步骤` };
+                  }
+
+                  let targetStartUrl = recipe.startUrl || recipe.urlPattern || recipe.steps[0]?.url;
+                  if (!targetStartUrl && /百度|baidu/i.test(recipe.name)) {
+                    targetStartUrl = 'https://www.baidu.com';
+                  }
+
+                  if (targetStartUrl) {
+                    try {
+                      const currentTab = await browser.tabs.get(targetTabId);
+                      const currentUrl = currentTab?.url || '';
+                      const originPrefix = targetStartUrl ? targetStartUrl.split('?')[0] : '';
+                      if (
+                        /^(chrome|edge|about|chrome-extension):/i.test(currentUrl) ||
+                        (originPrefix && !currentUrl.startsWith(originPrefix))
+                      ) {
+                        await browser.tabs.update(targetTabId, { url: targetStartUrl });
+                        await new Promise((r) => setTimeout(r, 1500));
+                      }
+                    } catch {
+                      /* ignore */
+                    }
+                  }
+
+                  const executionLog: string[] = [];
+                  let stepIdx = 0;
+                  for (const step of recipe.steps) {
+                    stepIdx++;
+                    if (!step) continue;
+                    executionLog.push(`步骤 ${stepIdx}/${recipe.steps.length}: ${step.description}`);
+
+                    let currentTabId = targetTabId;
+                    try {
+                      const [currentActive] = await browser.tabs.query({ active: true, currentWindow: true });
+                      if (currentActive?.id) {
+                        currentTabId = currentActive.id;
+                      }
+                      if (step.url) {
+                        const allTabs = await browser.tabs.query({ currentWindow: true });
+                        const prefix = step.url.split('?')[0] || '';
+                        const matchTab = allTabs.find((t) => t.url && prefix && t.url.startsWith(prefix));
+                        if (matchTab && matchTab.id && matchTab.id !== currentTabId) {
+                          currentTabId = matchTab.id;
+                          await browser.tabs.update(matchTab.id, { active: true });
+                        }
+                      }
+                    } catch {
+                      /* ignore */
+                    }
+
+                    if (step.type === 'click') {
+                      await callToolInTab(currentTabId, {
+                        id: `wf_${Date.now()}_${stepIdx}`,
+                        name: 'clickElement',
+                        args: { selector: step.selector, targetText: step.targetText },
+                      });
+                    } else if (step.type === 'type') {
+                      await callToolInTab(currentTabId, {
+                        id: `wf_${Date.now()}_${stepIdx}`,
+                        name: 'typeInto',
+                        args: {
+                          selector: step.selector,
+                          targetText: step.targetText,
+                          text: step.value || '',
+                          humanLike: true,
+                        },
+                      });
+                    } else if (step.type === 'pressEnter') {
+                      await callToolInTab(currentTabId, {
+                        id: `wf_${Date.now()}_${stepIdx}`,
+                        name: 'pressEnter',
+                        args: { selector: step.selector, targetText: step.targetText },
+                      });
+                    } else if (step.type === 'hover') {
+                      await callToolInTab(currentTabId, {
+                        id: `wf_${Date.now()}_${stepIdx}`,
+                        name: 'hoverElement',
+                        args: { selector: step.selector, targetText: step.targetText },
+                      });
+                    } else if (step.type === 'wait') {
+                      await new Promise((r) => setTimeout(r, step.waitMs || 1000));
+                    }
+                    // 拟人步骤间隔 300ms
+                    await new Promise((r) => setTimeout(r, 300));
+                  }
+
+                  return {
+                    ok: true,
+                    data: {
+                      name: recipe.name,
+                      stepCount: recipe.steps.length,
+                      logs: executionLog,
+                      note: `🎉 自动化工作流「${recipe.name}」已顺利执行完毕！`,
+                    },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `执行工作流失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 27. deleteWorkflowRecipe 删除工作流
+              if (call.name === 'deleteWorkflowRecipe') {
+                try {
+                  const nameOrId = String(call.args?.nameOrId ?? '').trim();
+                  const ok = await deleteWorkflowRecipe(nameOrId);
+                  if (!ok) return { ok: false, error: `未找到要删除的工作流「${nameOrId}」` };
+                  return {
+                    ok: true,
+                    data: { name: nameOrId, note: `🗑️ 已删除工作流「${nameOrId}」` },
+                  };
+                } catch (err) {
+                  return { ok: false, error: `删除工作流失败: ${(err as Error).message}` };
+                }
+              }
+
+              // 11. navigate 由 background 经 tabs.update 执行
               if (call.name === 'navigate') {
                 const url = String(call.args?.url ?? '');
                 const targetTabId = Number(call.args?.tabId) || payload.tabId;
@@ -921,7 +1764,7 @@ export default defineBackground(() => {
                 return result;
               }
 
-              // 3. 其他 DOM 工具(readPage/extractData 等):支持通过 args.tabId 指定目标标签页
+              // 12. 其他 DOM 工具(readPage/extractData 等):支持通过 args.tabId 指定目标标签页
               const targetTabId = Number(call.args?.tabId) || payload.tabId;
               return callToolInTab(targetTabId, call);
             },
@@ -962,91 +1805,6 @@ export default defineBackground(() => {
       ac = null;
       pendingConfirms.clear();
     });
-  });
-
-  // 监听跨域/同源图片抓取代理 (解决飞书/Notion等云文档图片 Cookie 鉴权与 CORS 跨域限制)
-  browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg?.type === 'FETCH_IMAGE_BINARY' && msg.url) {
-      (async () => {
-        try {
-          const url = String(msg.url);
-          let tabId = msg.tabId;
-          if (!tabId) {
-            const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-            tabId = tabs[0]?.id;
-          }
-
-          // 1. 优先尝试在当前 Tab 网页上下文中执行 fetch / canvas 提取 (100% 携带当前登录 Cookie)
-          if (tabId) {
-            try {
-              const execRes = await browser.scripting.executeScript({
-                target: { tabId },
-                func: async (targetUrl) => {
-                  try {
-                    // 尝试从 DOM 中的已加载图片通过 Canvas 提取 (绕过任何网络二次请求)
-                    const imgEl = Array.from(document.querySelectorAll('img')).find(
-                      (i) => i.src === targetUrl || i.getAttribute('data-src') === targetUrl || i.currentSrc === targetUrl,
-                    );
-                    if (imgEl && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
-                      try {
-                        const canvas = document.createElement('canvas');
-                        canvas.width = imgEl.naturalWidth;
-                        canvas.height = imgEl.naturalHeight;
-                        const ctx = canvas.getContext('2d');
-                        if (ctx) {
-                          ctx.drawImage(imgEl, 0, 0);
-                          const dataUrl = canvas.toDataURL('image/png');
-                          return { ok: true, dataUrl, contentType: 'image/png' };
-                        }
-                      } catch {}
-                    }
-
-                    // 在 Tab 内部执行 fetch (同源上下文，自动携带飞书 Cookie 凭据)
-                    const resp = await fetch(targetUrl, { credentials: 'include' });
-                    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
-                    const blob = await resp.blob();
-                    const contentType = blob.type || resp.headers.get('content-type') || 'image/png';
-                    return new Promise((resolve) => {
-                      const reader = new FileReader();
-                      reader.onloadend = () => resolve({ ok: true, dataUrl: reader.result as string, contentType });
-                      reader.onerror = () => resolve({ ok: false, error: '读取 Blob 失败' });
-                      reader.readAsDataURL(blob);
-                    });
-                  } catch (e) {
-                    return { ok: false, error: (e as Error).message };
-                  }
-                },
-                args: [url],
-              });
-
-              const result = execRes?.[0]?.result as any;
-              if (result && result.ok && result.dataUrl) {
-                sendResponse(result);
-                return;
-              }
-            } catch {
-              /* 忽略异常，降级走 background fetch */
-            }
-          }
-
-          // 2. 降级走 background fetch
-          const resp = await fetch(url);
-          if (!resp.ok) {
-            sendResponse({ ok: false, error: `HTTP ${resp.status}` });
-            return;
-          }
-          const blob = await resp.blob();
-          const contentType = blob.type || resp.headers.get('content-type') || 'image/png';
-          const reader = new FileReader();
-          reader.onloadend = () => sendResponse({ ok: true, dataUrl: reader.result as string, contentType });
-          reader.onerror = () => sendResponse({ ok: false, error: '读取失败' });
-          reader.readAsDataURL(blob);
-        } catch (err) {
-          sendResponse({ ok: false, error: (err as Error).message });
-        }
-      })();
-      return true; // 保持异步响应通道
-    }
   });
 
   // 监听网页划词即问与局部透镜消息

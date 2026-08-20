@@ -7,11 +7,96 @@ import {
 } from '../../src/utils/domTools/toolRegistry';
 
 describe('toolRegistry(工具注册表)', () => {
-  it('listToolNames:包含全部核心工具(含 writeWechatDraft, listTabs, getPagePerformance)', () => {
+  it('listToolNames:包含全部核心工具(含 writeWechatDraft, listTabs, groupTabs, closeTabs, getBookmarksTree 等)', () => {
     const names = listToolNames();
-    for (const n of ['getPageInfo', 'getPagePerformance', 'listTabs', 'readPage', 'findElements', 'clickElement', 'typeInto', 'scrollTo', 'waitFor', 'sleep', 'extractData', 'navigate', 'writeWechatDraft', 'evaluate']) {
+    for (const n of [
+      'getPageInfo',
+      'getPagePerformance',
+      'listTabs',
+      'groupTabs',
+      'closeTabs',
+      'activateTab',
+      'getBookmarksTree',
+      'searchBookmarks',
+      'createBookmark',
+      'moveBookmark',
+      'removeBookmark',
+      'searchHistory',
+      'readPage',
+      'findElements',
+      'clickElement',
+      'typeInto',
+      'scrollTo',
+      'waitFor',
+      'sleep',
+      'extractData',
+      'navigate',
+      'writeWechatDraft',
+      'discardTabs',
+      'saveWorkspace',
+      'listWorkspaces',
+      'restoreWorkspace',
+      'deleteWorkspace',
+      'getRecentlyClosedTabs',
+      'restoreClosedTab',
+      'clearBrowsingData',
+      'moveTabsToNewWindow',
+      'setTabZoom',
+      'searchDownloads',
+      'hoverElement',
+      'startWorkflowRecording',
+      'stopWorkflowRecording',
+      'saveWorkflowRecipe',
+      'listWorkflowRecipes',
+      'runWorkflowRecipe',
+      'deleteWorkflowRecipe',
+      'evaluate',
+    ]) {
       expect(names).toContain(n);
     }
+  });
+
+  it('getTool:groupTabs & closeTabs 定义完整', () => {
+    const group = getTool('groupTabs');
+    expect(group).toBeDefined();
+    expect(group?.required).toContain('tabIds');
+    expect(group?.required).toContain('title');
+
+    const close = getTool('closeTabs');
+    expect(close).toBeDefined();
+    expect(close?.sensitive).toBe(true);
+  });
+
+  it('getTool:workspace & system tools 定义完整', () => {
+    const saveWs = getTool('saveWorkspace');
+    expect(saveWs).toBeDefined();
+    expect(saveWs?.required).toContain('name');
+
+    const delWs = getTool('deleteWorkspace');
+    expect(delWs?.sensitive).toBe(true);
+
+    const clearData = getTool('clearBrowsingData');
+    expect(clearData?.sensitive).toBe(true);
+
+    const discard = getTool('discardTabs');
+    expect(discard).toBeDefined();
+
+    const zoom = getTool('setTabZoom');
+    expect(zoom?.required).toContain('zoomFactor');
+  });
+
+  it('getTool:bookmarks & history 工具定义完整', () => {
+    const tree = getTool('getBookmarksTree');
+    expect(tree).toBeDefined();
+
+    const searchBm = getTool('searchBookmarks');
+    expect(searchBm?.required).toContain('query');
+
+    const rmBm = getTool('removeBookmark');
+    expect(rmBm?.sensitive).toBe(true);
+
+    const hist = getTool('searchHistory');
+    expect(hist).toBeDefined();
   });
 
   it('getTool:writeWechatDraft 定义完整', () => {
@@ -114,18 +199,101 @@ describe('createDomExecutor', () => {
     expect(res.data).toHaveProperty('injectedFields');
   });
 
-  it('支持 getArticleOutline 工具执行并返回多级目录大纲树', async () => {
-    const executor = createDomExecutor();
-    const res = await executor.execute('getArticleOutline', {});
-    expect(res.ok).toBe(true);
-    expect(res.data).toHaveProperty('totalSections');
-    expect(res.data).toHaveProperty('outline');
-  });
+  it('支持 hideElement, removeElement, highlightElement, modifyElementStyle 定向操作 DOM', async () => {
+    const origDoc = (globalThis as any).document;
+    const origWin = (globalThis as any).window;
 
-  it('支持 highlightAndScrollTo 工具安全调用', async () => {
+    const adEl = {
+      tagName: 'DIV',
+      isConnected: true,
+      style: { display: 'block', outline: '', outlineOffset: '', boxShadow: '', zIndex: '', backgroundColor: '' },
+      innerText: '烦人的广告横幅',
+      textContent: '烦人的广告横幅',
+      getAttribute: () => null,
+      scrollIntoView: () => {},
+      remove: () => {},
+      getBoundingClientRect: () => ({ width: 200, height: 50 }),
+      getClientRects: () => [{ width: 200, height: 50 }],
+      parentElement: { tagName: 'BODY' },
+    };
+    const popupEl = {
+      tagName: 'DIV',
+      isConnected: true,
+      style: { display: 'block', outline: '', outlineOffset: '', boxShadow: '', zIndex: '', backgroundColor: '' },
+      innerText: '弹窗遮罩',
+      textContent: '弹窗遮罩',
+      getAttribute: () => null,
+      scrollIntoView: () => {},
+      getBoundingClientRect: () => ({ width: 300, height: 200 }),
+      getClientRects: () => [{ width: 300, height: 200 }],
+      parentElement: { tagName: 'BODY' },
+      removed: false,
+      remove() {
+        this.removed = true;
+      },
+    };
+    const cardEl = {
+      tagName: 'DIV',
+      isConnected: true,
+      style: { display: 'block', outline: '', outlineOffset: '', boxShadow: '', zIndex: '', backgroundColor: '' },
+      innerText: '重点内容卡片',
+      textContent: '重点内容卡片',
+      getAttribute: () => null,
+      scrollIntoView: () => {},
+      remove: () => {},
+      getBoundingClientRect: () => ({ width: 400, height: 300 }),
+      getClientRects: () => [{ width: 400, height: 300 }],
+      parentElement: { tagName: 'BODY' },
+    };
+
+    (globalThis as any).window = {
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
+      setTimeout: (fn: Function) => fn(),
+    };
+
+    (globalThis as any).document = {
+      querySelector: (sel: string) => {
+        if (sel === '#ad-banner') return adEl;
+        if (sel === '#popup-modal') return popupEl;
+        if (sel === '#content-card') return cardEl;
+        return null;
+      },
+      querySelectorAll: (sel: string) => {
+        if (sel === '#ad-banner') return [adEl];
+        if (sel === '#popup-modal') return [popupEl];
+        if (sel === '#content-card') return [cardEl];
+        return [];
+      },
+      body: { tagName: 'BODY', innerText: 'mock' },
+    };
+
     const executor = createDomExecutor();
-    const res = await executor.execute('highlightAndScrollTo', { anchorId: 'anchor-1' });
-    expect(res.ok).toBe(true);
-    expect(res.data).toHaveProperty('scrolled', true);
+
+    // 1. 隐藏元素 hideElement
+    const hideRes = await executor.execute('hideElement', { selector: '#ad-banner' });
+    expect(hideRes.ok).toBe(true);
+    expect(adEl.style.display).toBe('none');
+
+    // 2. 删除元素 removeElement
+    const removeRes = await executor.execute('removeElement', { selector: '#popup-modal' });
+    expect(removeRes.ok).toBe(true);
+    expect(popupEl.removed).toBe(true);
+
+    // 3. 高亮元素 highlightElement
+    const hlRes = await executor.execute('highlightElement', { selector: '#content-card', color: '#ff0000', persistent: true });
+    expect(hlRes.ok).toBe(true);
+    expect(cardEl.style.outline).toContain('#ff0000');
+
+    // 4. 修改样式 modifyElementStyle
+    const styleRes = await executor.execute('modifyElementStyle', {
+      selector: '#content-card',
+      styles: { zIndex: '9999', backgroundColor: 'rgb(240, 240, 240)' },
+    });
+    expect(styleRes.ok).toBe(true);
+    expect(cardEl.style.zIndex).toBe('9999');
+    expect(cardEl.style.backgroundColor).toBe('rgb(240, 240, 240)');
+
+    (globalThis as any).document = origDoc;
+    (globalThis as any).window = origWin;
   });
 });

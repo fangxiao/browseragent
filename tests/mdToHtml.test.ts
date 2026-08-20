@@ -26,7 +26,7 @@ describe('mdToHtml', () => {
     const html = mdToHtml('这是 **重点** 和 `code` 与 [链接](https://x.com)');
     expect(html).toContain('<strong>重点</strong>');
     expect(html).toContain('<code>code</code>');
-    expect(html).toContain('<a href="https://x.com">链接</a>');
+    expect(html).toContain('<a href="https://x.com" target="_blank" rel="noopener noreferrer">链接</a>');
     expect(mdToHtml('<script>')).toContain('&lt;script&gt;');
   });
 

@@ -179,7 +179,7 @@ function App() {
           <label className="flex items-center justify-between">
             <div>
               <span className="text-gray-600">调试模式</span>
-              <p className="text-xs text-gray-400">在侧边栏中默认展开 AI 思考过程与中间执行步骤卡片</p>
+              <p className="text-xs text-gray-400">开启后在侧边栏顶部显示调试状态，并默认展开 AI 思考过程与中间执行步骤卡片</p>
             </div>
             <input
               type="checkbox"

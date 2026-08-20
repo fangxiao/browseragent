@@ -7,6 +7,7 @@ import { isEditableEditor, extractDocId } from '@/utils/pageExtract/editor/detec
 import { extractDocContent } from '@/utils/pageExtract/editor/extract';
 import { createDomExecutor } from '@/utils/domTools/executor';
 import { initSelectionPill } from '@/utils/domTools/selectionPill';
+import { startRecording, stopRecording, getRecordingStatus, checkAndResumeRecording } from '@/utils/workflow/recorder';
 import type { ExtractRequest, ExtractResponse, WritebackRequest, WritebackResponse, ToolRequest, ToolResponse } from '@/utils/messaging';
 
 declare global {
@@ -54,12 +55,20 @@ function insertHtml(html: string, mode: 'append' | 'cursor'): { ok: boolean; mes
 
 export default defineContentScript({
   matches: ['<all_urls>'],
+  allFrames: true,
   main() {
     console.log('[ai-agent] content script injected; url:', location.href);
 
     // 初始化网页划词即问与局部透镜悬浮条
     try {
       initSelectionPill();
+    } catch {
+      /* 忽略异常 */
+    }
+
+    // 自动感知并续接跨页面流程录制状态 (针对百度等搜索跳转/页面刷新场景)
+    try {
+      void checkAndResumeRecording();
     } catch {
       /* 忽略异常 */
     }
@@ -73,6 +82,11 @@ export default defineContentScript({
           executor
             .execute(msg.call.name, msg.call.args)
             .then((result): ToolResponse => ({ type: 'TOOL:RESULT', callId: msg.call.id, result }))
+            .catch((err): ToolResponse => ({
+              type: 'TOOL:RESULT',
+              callId: msg.call.id,
+              result: { ok: false, error: err instanceof Error ? err.message : String(err) },
+            }))
             .then(sendResponse);
           return true; // 异步响应
         }
@@ -89,6 +103,7 @@ export default defineContentScript({
               (doc): ExtractResponse => ({ type: 'EXTRACT:RESULT', doc }),
               (err): ExtractResponse => ({ type: 'EXTRACT:ERROR', message: String(err) }),
             )
+            .catch((err): ExtractResponse => ({ type: 'EXTRACT:ERROR', message: String(err) }))
             .then(sendResponse);
           return true; // 异步响应
         }
@@ -100,6 +115,27 @@ export default defineContentScript({
           sendResponse({ type: 'WRITEBACK:RESULT', ...res } satisfies WritebackResponse);
           return true;
         }
+
+        // 流程自动化录制消息监听 (异步响应)
+        if ((msg as any)?.type === 'WORKFLOW:START_RECORDING') {
+          startRecording()
+            .catch((err) => ({ ok: false, message: String(err) }))
+            .then(sendResponse);
+          return true;
+        }
+        if ((msg as any)?.type === 'WORKFLOW:STOP_RECORDING') {
+          stopRecording()
+            .catch((err) => ({ ok: false, steps: [], actionCount: 0, message: String(err) }))
+            .then(sendResponse);
+          return true;
+        }
+        if ((msg as any)?.type === 'WORKFLOW:GET_STATUS') {
+          getRecordingStatus()
+            .catch((err) => ({ isRecording: false, count: 0, error: String(err) }))
+            .then(sendResponse);
+          return true;
+        }
+
         return undefined;
       },
     );

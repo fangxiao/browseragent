@@ -6,6 +6,10 @@ export interface TabItem {
   title: string;
   url: string;
   active?: boolean;
+  pinned?: boolean;
+  groupId?: number;
+  groupTitle?: string;
+  groupColor?: string;
 }
 
 export type ComparisonMode = 'content' | 'performance' | 'data' | 'dialectic' | 'feishu' | 'all';

@@ -77,4 +77,27 @@ describe('safety(敏感操作判定纯函数)', () => {
     const relative: ToolCall = { id: '10', name: 'navigate', args: { url: '/page2' } };
     expect(isSensitiveToolCall(relative).sensitive).toBe(false);
   });
+
+  it('isSensitiveToolCall:closeTabs 批量关闭标签页敏感', () => {
+    const multi: ToolCall = { id: '11', name: 'closeTabs', args: { tabIds: [101, 102, 103] } };
+    const single: ToolCall = { id: '12', name: 'closeTabs', args: { tabIds: [101] } };
+    expect(isSensitiveToolCall(multi).sensitive).toBe(true);
+    expect(isSensitiveToolCall(single).sensitive).toBe(false);
+  });
+
+  it('isSensitiveToolCall:removeBookmark 删除书签敏感', () => {
+    const item: ToolCall = { id: '13', name: 'removeBookmark', args: { id: 'bm_12' } };
+    const folder: ToolCall = { id: '14', name: 'removeBookmark', args: { id: 'bm_folder_3', isFolder: true } };
+    expect(isSensitiveToolCall(item).sensitive).toBe(true);
+    expect(isSensitiveToolCall(folder).sensitive).toBe(true);
+  });
+
+  it('isSensitiveToolCall:clearBrowsingData, deleteWorkspace 与 deleteWorkflowRecipe 敏感', () => {
+    const clearCall: ToolCall = { id: '15', name: 'clearBrowsingData', args: { origins: ['https://localhost:3000'] } };
+    const delWsCall: ToolCall = { id: '16', name: 'deleteWorkspace', args: { nameOrId: '调研快照' } };
+    const delWfCall: ToolCall = { id: '17', name: 'deleteWorkflowRecipe', args: { nameOrId: '每日打卡' } };
+    expect(isSensitiveToolCall(clearCall).sensitive).toBe(true);
+    expect(isSensitiveToolCall(delWsCall).sensitive).toBe(true);
+    expect(isSensitiveToolCall(delWfCall).sensitive).toBe(true);
+  });
 });

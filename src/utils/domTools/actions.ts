@@ -3,27 +3,31 @@ import { matrixToCsv, matrixToJson, projectColumns } from './extractData';
 import { findOptionIndex } from './form';
 import { buildTree, findElementsByQuery, type ElementInfo } from './elementTree';
 import { markdownToWechatHtml } from '../wechat/styleInliner';
-import { markdownToFeishuHtml } from '../feishu/blockFormatter';
 import {
   sweepVirtualDoc,
   isVirtualizedPage,
   triggerScrollStep,
   getAllScrollableElements,
 } from './virtualScroller';
-import { extractDocMarkdown } from '../feishu/docToMarkdown';
 
 const toStr = (v: unknown): string => String(v ?? '');
 
-/** 给元素加临时高亮描边(操作视觉反馈,1.5s 后自动移除)。见 docs/design/agent.md §10 */
+/** 给元素加临时高亮描边(操作视觉反馈,1.8s 后自动移除)。见 docs/design/agent.md §10 */
 function flashHighlight(el: HTMLElement, color = '#3b82f6'): void {
-  const prev = el.style.outline;
+  const prevOutline = el.style.outline;
   const prevOffset = el.style.outlineOffset;
-  el.style.outline = `2px solid ${color}`;
+  const prevShadow = el.style.boxShadow;
+  const prevTransition = el.style.transition;
+  el.style.transition = 'outline 0.2s ease, box-shadow 0.2s ease';
+  el.style.outline = `3px solid ${color}`;
   el.style.outlineOffset = '2px';
+  el.style.boxShadow = `0 0 16px ${color}`;
   window.setTimeout(() => {
-    el.style.outline = prev;
+    el.style.outline = prevOutline;
     el.style.outlineOffset = prevOffset;
-  }, 1500);
+    el.style.boxShadow = prevShadow;
+    el.style.transition = prevTransition;
+  }, 1800);
 }
 
 /** DOM → ElementInfo 树(语义元素树的数据源;深度受限避免过大) */
@@ -70,24 +74,191 @@ function collectAllElements(root: Element): ElementInfo[] {
   return flat;
 }
 
-/** 按文本/语义定位元素:先试 selector,再按可见文本/aria-label 找可交互元素 */
-function queryElement(selector: string): HTMLElement | null {
-  const q = toStr(selector).trim();
-  if (!q) return null;
-  // 1) 直接 CSS 选择器
-  try {
-    const el = document.querySelector<HTMLElement>(q);
-    if (el) return el;
-  } catch {
-    /* 非法 selector,继续按文本找 */
+/** 判断元素是否在 DOM 中且具有可交互布局 */
+function isElementVisible(el: HTMLElement): boolean {
+  if (!el) return false;
+  if ('isConnected' in el && !el.isConnected) return false;
+  const win = typeof window !== 'undefined' ? window : (globalThis as any).window;
+  const style = win?.getComputedStyle ? win.getComputedStyle(el) : ((el as any).style || {});
+  if (style && (style.display === 'none' || style.visibility === 'hidden')) {
+    return false;
   }
-  // 2) 可见文本匹配(按钮/链接/任意元素)
-  const matches = Array.from(document.querySelectorAll<HTMLElement>('button, a, [role="button"], input, select, textarea, label, div, span'));
+  const rect = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
   return (
-    matches.find((el) => (el.textContent ?? '').trim() === q) ??
-    matches.find((el) => (el.getAttribute('aria-label') ?? '') === q) ??
-    null
+    (rect ? (rect.width > 0 && rect.height > 0) : true) ||
+    (typeof el.getClientRects === 'function' && el.getClientRects().length > 0) ||
+    Boolean(el.offsetParent) ||
+    el.tagName === 'BODY'
   );
+}
+
+const normText = (s: string): string => s.replace(/\s+/g, ' ').trim().toLowerCase();
+
+/** 智能自愈定位元素:优先语义/文本 -> 其次特异选择器 -> 结构化层级与容器穿透 -> XPath 深度文本兜底 -> Iframe 跨帧递归穿透 */
+function queryElement(
+  selector?: string,
+  targetText?: string,
+  rootDoc: Document = (typeof document !== 'undefined' ? document : (globalThis as any).document),
+): HTMLElement | null {
+  if (!rootDoc) return null;
+  const sel = toStr(selector).trim();
+  const text = toStr(targetText).trim();
+  const searchText = text || sel;
+  const nSearch = normText(searchText);
+
+  // 1. 如果有明确且特异的选择器 (包含 id, testid, name, 或具有层级/伪类的 selector)
+  if (sel && !/^(button|input|select|textarea|a|div|span|p|li|label|form|header|footer|nav|main|section)$/i.test(sel)) {
+    try {
+      const candidates = Array.from(rootDoc.querySelectorAll<HTMLElement>(sel)).filter(isElementVisible);
+      if (candidates.length === 1) return candidates[0]!;
+      if (candidates.length > 1 && nSearch) {
+        // 多元素时，优先匹配文本一致者
+        const matched = candidates.find((el) => {
+          const t = normText(el.innerText || el.textContent || '');
+          const v = el instanceof HTMLInputElement ? normText(el.value) : '';
+          const aria = normText(el.getAttribute('aria-label') || '');
+          const placeholder = normText(el.getAttribute('placeholder') || '');
+          return t === nSearch || v === nSearch || aria === nSearch || placeholder === nSearch || t.includes(nSearch);
+        });
+        if (matched) return matched;
+      }
+      if (candidates.length > 0) return candidates[0]!;
+    } catch {
+      /* 非法选择器，继续语义降级定位 */
+    }
+  }
+
+  // 2. 语义与可见文本精准匹配 (支持按钮、链接、标题、输入框、卡片容器等全量可交互节点)
+  if (nSearch) {
+    const allElements = Array.from(
+      rootDoc.querySelectorAll<HTMLElement>(
+        'a, button, [role="button"], input, textarea, select, h1, h2, h3, h4, h5, h6, [role="tab"], [role="menuitem"], [role="link"], [role="checkbox"], [role="radio"], [role="switch"], [role="treeitem"], label, em, b, strong, span, p, div, li, footer, nav, header',
+      ),
+    ).filter(isElementVisible);
+
+    // 2.1 针对按钮/链接/标题/卡片: 完全匹配或核心文本匹配
+    const exactMatch = allElements.find((el) => {
+      const t = normText(el.innerText || el.textContent || '');
+      const aria = normText(el.getAttribute('aria-label') || '');
+      const val = el instanceof HTMLInputElement ? normText(el.value) : '';
+      const title = normText(el.getAttribute('title') || '');
+      return t === nSearch || aria === nSearch || val === nSearch || title === nSearch;
+    });
+    if (exactMatch) {
+      // 若匹配到的是标题或包含链接的容器，优先返回内嵌的 <a> 或最直接的交互点
+      const innerAnchor = exactMatch.querySelector<HTMLElement>('a, button, [role="button"]');
+      return innerAnchor && isElementVisible(innerAnchor) ? innerAnchor : exactMatch;
+    }
+
+    // 2.2 针对输入框/下拉框: 匹配 placeholder / aria-label / name / 关联 label
+    const exactInput = allElements.find((el) => {
+      if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement)) {
+        return false;
+      }
+      const placeholder = normText(el.getAttribute('placeholder') || '');
+      const aria = normText(el.getAttribute('aria-label') || '');
+      const name = normText(el.getAttribute('name') || '');
+      if (placeholder === nSearch || aria === nSearch || name === nSearch) return true;
+      if (el.id) {
+        const label = rootDoc.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        if (label && normText(label.textContent || '') === nSearch) return true;
+      }
+      const parentLabel = el.closest('label');
+      if (parentLabel && normText(parentLabel.textContent || '').includes(nSearch)) return true;
+      return false;
+    });
+    if (exactInput) return exactInput;
+
+    // 2.3 文本包含/模糊匹配 (如百度搜索结果带 <em> 修饰的标题)
+    const partialMatch = allElements.find((el) => {
+      const isInteractiveTag =
+        el.tagName === 'A' ||
+        el.tagName === 'BUTTON' ||
+        el.tagName === 'H1' ||
+        el.tagName === 'H2' ||
+        el.tagName === 'H3' ||
+        el.tagName === 'H4' ||
+        el.tagName === 'H5' ||
+        el.tagName === 'SPAN' ||
+        el.tagName === 'LI' ||
+        el.getAttribute('role') === 'button' ||
+        el.getAttribute('role') === 'link';
+      if (!isInteractiveTag) return false;
+      const t = normText(el.innerText || el.textContent || '');
+      const aria = normText(el.getAttribute('aria-label') || '');
+      const placeholder = normText(el.getAttribute('placeholder') || '');
+      return t.includes(nSearch) || nSearch.includes(t) || aria.includes(nSearch) || placeholder.includes(nSearch);
+    });
+    if (partialMatch) {
+      const innerAnchor = partialMatch.querySelector<HTMLElement>('a, button, [role="button"]');
+      return innerAnchor && isElementVisible(innerAnchor) ? innerAnchor : partialMatch;
+    }
+
+    // 2.4 XPath 深度文本穿透 (查找页面任意位置包含目标文本的最深层交互节点，支持页脚/嵌套链接/复杂卡片)
+    try {
+      if (typeof rootDoc.evaluate === 'function') {
+        const cleanXPathText = searchText.replace(/'/g, "\\'");
+        const xpath = `.//*[contains(normalize-space(.), '${cleanXPathText}')]`;
+        const result = rootDoc.evaluate(xpath, rootDoc.body, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        if (result && result.snapshotLength > 0) {
+          for (let i = result.snapshotLength - 1; i >= 0; i--) {
+            const item = result.snapshotItem(i) as HTMLElement;
+            if (item && isElementVisible(item)) {
+              const clickable = item.closest('a, button, [role="button"]') as HTMLElement | null;
+              return clickable || item;
+            }
+          }
+        }
+      }
+    } catch {
+      /* ignore xpath errors */
+    }
+  }
+
+  // 3. 回退: 尝试使用原 selector 直接查找第一个可见元素
+  if (sel) {
+    try {
+      const candidates = Array.from(rootDoc.querySelectorAll<HTMLElement>(sel)).filter(isElementVisible);
+      if (candidates.length > 0) return candidates[0]!;
+      const anyEl = rootDoc.querySelector<HTMLElement>(sel);
+      if (anyEl) return anyEl;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // 4. 穿透招聘系统/企业中台常使用的同一来源/可访问子 Iframe 递归查找
+  if (rootDoc === document) {
+    const iframes = Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe'));
+    for (const frame of iframes) {
+      try {
+        const frameDoc = frame.contentDocument;
+        if (frameDoc && frameDoc.body) {
+          const found = queryElement(selector, targetText, frameDoc);
+          if (found) return found;
+        }
+      } catch {
+        /* 跨域 iframe 安全拦截忽略 */
+      }
+    }
+  }
+
+  return null;
+}
+
+/** 智能异步轮询等待元素就绪 (自动容错网络跳转/SPA异步渲染，最多等待 timeoutMs 毫秒) */
+async function waitForSmartElement(
+  selector?: string,
+  targetText?: string,
+  timeoutMs = 4000,
+): Promise<HTMLElement | null> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const el = queryElement(selector, targetText);
+    if (el) return el;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return null;
 }
 
 /** 从 DOM 收集表格/列表为字符串矩阵 */
@@ -440,20 +611,179 @@ export const actions = {
   },
 
   async clickElement(args: Record<string, unknown>): Promise<ToolResult> {
-    const el = queryElement(toStr(args.selector));
-    if (!el) return { ok: false, error: `未找到可点击元素:${toStr(args.selector)}` };
+    const sel = toStr(args.selector);
+    const targetText = toStr(args.targetText || args.text);
+    let el = await waitForSmartElement(sel, targetText, 6000);
+
+    // 智能自愈容错: 如果是在搜索场景下点击联想词(如百度联想词)，但联想词浮层未及时弹出
+    if (!el && (/百度|baidu|sogou|360|bing|google|search/i.test(document.title) || document.querySelector('#kw, input[name="wd"]'))) {
+      const searchSubmitBtn = document.querySelector<HTMLElement>('#su, button[type="submit"], input[type="submit"], [aria-label="搜索"]');
+      const searchInput = document.querySelector<HTMLElement>('#kw, input[name="wd"], input[type="search"]');
+      if (searchSubmitBtn && isElementVisible(searchSubmitBtn)) {
+        el = searchSubmitBtn;
+      } else if (searchInput) {
+        searchInput.focus();
+        searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+        const form = searchInput.closest('form');
+        if (form) {
+          try {
+            if (typeof form.requestSubmit === 'function') {
+              form.requestSubmit();
+            } else {
+              form.submit();
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+        await new Promise((r) => setTimeout(r, 600));
+        return { ok: true, data: { clicked: '回车提交搜索(联想词自愈降级)' } };
+      }
+    }
+
+    if (!el) return { ok: false, error: `未找到可点击元素:${targetText || sel}` };
     flashHighlight(el);
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    el.click();
-    return { ok: true, data: { clicked: toStr(args.selector) } };
+    try {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    } catch {
+      /* ignore */
+    }
+
+    // 拟人鼠标事件序列 (模拟真实用户点击链路，触发 React/Vue/AntD 等组件内状态机)
+    el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    try {
+      el.focus();
+    } catch {
+      /* ignore */
+    }
+    el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    if (typeof (el as any).click === 'function') {
+      el.click();
+    }
+
+    // 如果目标是 SVG/内嵌标签，向最近的可交互父容器也派发点击，保证企业级 SPA (React/Vue/AntD) 合成事件触发
+    const interactiveParent = el.closest<HTMLElement>(
+      'button, a, [role="button"], [role="tab"], [role="menuitem"], [class*="btn"], [class*="trigger"], [class*="item"], [onclick], span, div',
+    );
+    if (interactiveParent && interactiveParent !== el && interactiveParent !== document.body) {
+      interactiveParent.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      if (typeof (interactiveParent as any).click === 'function') {
+        try {
+          (interactiveParent as any).click();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    // 如果目标是 <a> 链接且带有有效 href
+    const anchor = (el instanceof HTMLAnchorElement ? el : el.closest('a')) as HTMLAnchorElement | null;
+    if (anchor && anchor.href && !anchor.href.startsWith('javascript:')) {
+      const isNewTab = anchor.target === '_blank' || anchor.getAttribute('target') === '_blank';
+      try {
+        if (typeof browser !== 'undefined' && browser.runtime?.sendMessage) {
+          // 通过 background 统一调用 browser.tabs.create / update 穿透浏览器弹窗拦截器 (Popup Blocker)
+          void browser.runtime.sendMessage({
+            type: 'WORKFLOW:OPEN_URL',
+            url: anchor.href,
+            target: isNewTab ? '_blank' : '_self',
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    // 如果目标是表单提交按钮或处于 form 内的 submit 按钮，额外调用 requestSubmit 确保表单提交生效
+    if (
+      (el instanceof HTMLInputElement && (el.type === 'submit' || el.type === 'button')) ||
+      (el instanceof HTMLButtonElement && (el.type === 'submit' || !el.type))
+    ) {
+      const form = el.closest('form');
+      if (form) {
+        try {
+          if (typeof form.requestSubmit === 'function') {
+            form.requestSubmit(el instanceof HTMLButtonElement ? el : undefined);
+          } else {
+            form.submit();
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    // 短暂等待框架微任务渲染(如自定义下拉菜单展开/Modal出现)
+    await new Promise((r) => setTimeout(r, 200));
+    return { ok: true, data: { clicked: targetText || sel } };
+  },
+
+  async pressEnter(args: Record<string, unknown>): Promise<ToolResult> {
+    const el =
+      (await waitForSmartElement(toStr(args.selector), toStr(args.targetText), 3000)) ||
+      (document.activeElement as HTMLElement) ||
+      document.body;
+    if (el) {
+      flashHighlight(el);
+      el.focus();
+      el.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }),
+      );
+      el.dispatchEvent(
+        new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }),
+      );
+      el.dispatchEvent(
+        new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }),
+      );
+      const form = el.closest('form');
+      if (form) {
+        try {
+          if (typeof form.requestSubmit === 'function') {
+            form.requestSubmit();
+          } else {
+            form.submit();
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    // 等待提交触发渲染
+    await new Promise((r) => setTimeout(r, 600));
+    return { ok: true, data: { pressed: 'Enter' } };
+  },
+
+  async hoverElement(args: Record<string, unknown>): Promise<ToolResult> {
+    const el = await waitForSmartElement(toStr(args.selector), toStr(args.targetText || args.text), 4000);
+    if (!el) return { ok: false, error: `未找到目标元素:${toStr(args.targetText || args.selector)}` };
+    flashHighlight(el, '#10b981');
+    try {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    } catch {
+      /* ignore */
+    }
+    el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true }));
+    el.dispatchEvent(new PointerEvent('pointermove', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    return { ok: true, data: { hovered: toStr(args.targetText || args.selector) } };
   },
 
   async typeInto(args: Record<string, unknown>): Promise<ToolResult> {
-    const el = queryElement(toStr(args.selector));
-    if (!el) return { ok: false, error: `未找到输入框:${toStr(args.selector)}` };
+    const el = await waitForSmartElement(
+      toStr(args.selector),
+      toStr(args.targetText || args.placeholder || args.label),
+      4000,
+    );
+    if (!el) return { ok: false, error: `未找到输入框:${toStr(args.targetText || args.selector)}` };
     flashHighlight(el);
     const text = toStr(args.text);
-    // select 下拉:按选项文本/值定位(纯函数 findOptionIndex,已单测)
+
+    // 1. select 原生下拉:按选项文本/值定位
     if (el instanceof HTMLSelectElement) {
       const options = Array.from(el.options).map((o) => ({ value: o.value, text: o.text }));
       const idx = findOptionIndex(options, text);
@@ -468,20 +798,75 @@ export const actions = {
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return { ok: true, data: { selected: el.options[idx]!.text } };
     }
-    // checkbox / radio:值非"否"即勾选(clear 参数对这类元素无意义)
+
+    // 2. checkbox / radio:值非"否"即勾选
     if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')) {
       el.checked = !/^(false|off|0|no|取消|不勾选)$/i.test(text);
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return { ok: true, data: { checked: el.checked } };
     }
+
+    // 3. contenteditable 或 role="textbox" 富文本编辑器
+    if (el.getAttribute('contenteditable') === 'true' || el.getAttribute('role') === 'textbox') {
+      el.focus();
+      const clear = args.clear !== false;
+      if (clear) {
+        el.innerText = '';
+      }
+      try {
+        document.execCommand('insertText', false, text);
+      } catch {
+        el.innerText += text;
+      }
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true, data: { typed: text, richText: true } };
+    }
+
+    // 4. 标准 input / textarea 输入框 (处理 React/Vue 受控组件 + 拟人逐字输入)
     const input = el as HTMLInputElement | HTMLTextAreaElement;
+    input.focus();
     const clear = args.clear !== false;
+    const isHuman = Boolean(args.humanLike);
+
+    const setNativeValue = (val: string) => {
+      const prototype =
+        input instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement?.prototype : window.HTMLInputElement?.prototype;
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+      if (descriptor?.set) {
+        descriptor.set.call(input, val);
+      } else {
+        input.value = val;
+      }
+    };
+
+    if (isHuman && text.length > 0) {
+      if (clear) {
+        setNativeValue('');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      let current = clear ? '' : input.value;
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        current += char;
+        setNativeValue(current);
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keypress', { key: char, bubbles: true }));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keyup', { key: char, bubbles: true }));
+        const jitter = Math.floor(Math.random() * 25) + 15;
+        await new Promise((r) => setTimeout(r, jitter));
+      }
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true, data: { typed: text, humanLike: true } };
+    }
+
     if (clear) {
-      input.value = '';
+      setNativeValue('');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }
-    input.value += text;
+    setNativeValue(clear ? text : input.value + text);
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     return { ok: true, data: { typed: text } };
@@ -576,187 +961,6 @@ export const actions = {
   /** navigate 由 background 经 tabs.update 执行,这里提供占位(不应被 content 调用) */
   async navigate(): Promise<ToolResult> {
     return { ok: false, error: 'navigate 由后台(background)处理,不在 content 执行' };
-  },
-
-  /** 提取当前页面的多级目录大纲树与段落锚点 */
-  async getArticleOutline(args: Record<string, unknown>): Promise<ToolResult> {
-    if (typeof document === 'undefined') {
-      return {
-        ok: true,
-        data: {
-          title: '测试文档',
-          totalSections: 0,
-          totalWords: 0,
-          outline: [],
-        },
-      };
-    }
-
-    const fullScan = args.fullScan !== false;
-    const detection = isVirtualizedPage();
-
-    // 虚拟滚动长文档(飞书 DocX / Notion 等)全量扫描多级大纲
-    if (fullScan && detection.isVirtual) {
-      try {
-        const sweep = await sweepVirtualDoc({
-          textLimit: 80000,
-          stepDelayMs: 60,
-        });
-
-        if (sweep.headings.length > 0) {
-          return {
-            ok: true,
-            data: {
-              title: document.title || '当前文档',
-              url: typeof location !== 'undefined' ? location.href : '',
-              totalSections: sweep.headings.length,
-              totalWords: sweep.fullText.length,
-              outline: sweep.headings,
-              isVirtualized: true,
-            },
-          };
-        }
-      } catch {
-        /* 回退使用普通 DOM 查询 */
-      }
-    }
-
-    const sel = toStr(args.selector);
-    let container: HTMLElement | null = sel ? document.querySelector<HTMLElement>(sel) : null;
-    if (!container) {
-      container = document.querySelector<HTMLElement>(
-        'article, [role="article"], .article-content, .markdown-body, .post-content, .entry-content, main, #content, .content, body',
-      ) || document.body;
-    }
-
-    const headingEls = Array.from(container.querySelectorAll<HTMLElement>('h1, h2, h3, h4, p, blockquote'));
-    const outline: Array<{
-      anchorId: string;
-      level: number;
-      tag: string;
-      title: string;
-      snippet: string;
-    }> = [];
-
-    let anchorIdx = 1;
-    let totalWords = 0;
-
-    for (const el of headingEls) {
-      const tag = el.tagName.toLowerCase();
-      const txt = (el.textContent || '').trim();
-      if (!txt) continue;
-
-      totalWords += txt.length;
-      const isHeading = /^h[1-4]$/.test(tag);
-      const isImportantPara = tag === 'p' && txt.length > 50 && outline.length < 50;
-
-      if (isHeading || isImportantPara) {
-        let anchorId = el.getAttribute('data-agent-anchor');
-        if (!anchorId) {
-          anchorId = `anchor-${anchorIdx++}`;
-          el.setAttribute('data-agent-anchor', anchorId);
-        }
-
-        const level = isHeading ? parseInt(tag.slice(1), 10) : 0;
-        outline.push({
-          anchorId,
-          level,
-          tag,
-          title: isHeading ? txt : `${txt.slice(0, 36)}…`,
-          snippet: txt.slice(0, 120),
-        });
-      }
-    }
-
-    return {
-      ok: true,
-      data: {
-        title: document.title || '当前网页',
-        url: typeof location !== 'undefined' ? location.href : '',
-        totalSections: outline.length,
-        totalWords,
-        outline,
-        isVirtualized: detection.isVirtual,
-      },
-    };
-  },
-
-  /** 平滑滚动并柔光脉冲高亮目标段落/元素 */
-  async highlightAndScrollTo(args: Record<string, unknown>): Promise<ToolResult> {
-    if (typeof document === 'undefined') {
-      return { ok: true, data: { scrolled: true, anchorId: toStr(args.anchorId) } };
-    }
-
-    const anchorId = toStr(args.anchorId).trim();
-    const sel = toStr(args.selector).trim();
-    const textSnippet = toStr(args.textSnippet).trim();
-
-    let targetEl: HTMLElement | null = null;
-
-    if (anchorId) {
-      try {
-        targetEl = document.querySelector<HTMLElement>(`[data-agent-anchor="${anchorId}"]`);
-      } catch {
-        /* 忽略异常 */
-      }
-      if (!targetEl && typeof document.getElementById === 'function') {
-        targetEl = document.getElementById(anchorId);
-      }
-    }
-    if (!targetEl && sel) {
-      try {
-        targetEl = document.querySelector<HTMLElement>(sel);
-      } catch {
-        /* 忽略非法选择器 */
-      }
-    }
-    if (!targetEl && textSnippet) {
-      const candidates = Array.from(document.querySelectorAll<HTMLElement>('p, h1, h2, h3, h4, li, blockquote, div'));
-      targetEl = candidates.find((c) => (c.textContent || '').includes(textSnippet)) || null;
-    }
-
-    if (!targetEl) {
-      return { ok: false, error: `未找到匹配的段落或元素(anchorId: ${anchorId || '无'}, textSnippet: ${textSnippet || '无'})` };
-    }
-
-    // 1. 平滑滚动到视口中央
-    targetEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-
-    // 2. 注入脉冲动画样式(若未注入)
-    if (!document.getElementById('ai-agent-pulse-style')) {
-      const style = document.createElement('style');
-      style.id = 'ai-agent-pulse-style';
-      style.textContent = `
-        @keyframes aiAgentPulseGlow {
-          0% { outline: 3px solid #f59e0b; box-shadow: 0 0 16px rgba(245, 158, 11, 0.6); background-color: rgba(254, 240, 138, 0.45); }
-          50% { outline: 4px solid #d97706; box-shadow: 0 0 24px rgba(245, 158, 11, 0.85); background-color: rgba(254, 240, 138, 0.65); }
-          100% { outline: 2px solid transparent; box-shadow: none; background-color: transparent; }
-        }
-        .ai-agent-pulse-target {
-          animation: aiAgentPulseGlow 2.5s ease-out forwards !important;
-          border-radius: 4px !important;
-        }
-      `;
-      document.head.appendChild(style);
-    }
-
-    // 3. 添加脉冲动画并于 2.6s 后平滑移除
-    targetEl.classList.remove('ai-agent-pulse-target');
-    // 强制触发 reflow 重新播放动画
-    void targetEl.offsetWidth;
-    targetEl.classList.add('ai-agent-pulse-target');
-    setTimeout(() => {
-      targetEl?.classList.remove('ai-agent-pulse-target');
-    }, 2600);
-
-    return {
-      ok: true,
-      data: {
-        scrolled: true,
-        anchorId: targetEl.getAttribute('data-agent-anchor') || anchorId || 'matched',
-        snippet: (targetEl.textContent || '').trim().slice(0, 80),
-      },
-    };
   },
 
   async writeWechatDraft(args: Record<string, unknown>): Promise<ToolResult> {
@@ -890,23 +1094,6 @@ export const actions = {
     };
   },
 
-  /** 将飞书云文档/网页长文全量转换为标准 Markdown */
-  async exportDocMarkdown(args: Record<string, unknown>): Promise<ToolResult> {
-    const textLimit = typeof args.textLimit === 'number' ? args.textLimit : 200000;
-    try {
-      const res = await extractDocMarkdown({ textLimit });
-      return {
-        ok: true,
-        data: {
-          ...res,
-          notice: '全量 Markdown 提取已完成，全文与下载卡片已就绪，当前操作已圆满结束。',
-        },
-      };
-    } catch (err) {
-      return { ok: false, error: `转换文档 Markdown 失败:${(err as Error).message}` };
-    }
-  },
-
   async evaluate(args: Record<string, unknown>): Promise<ToolResult> {
     const js = toStr(args.js);
     try {
@@ -917,5 +1104,235 @@ export const actions = {
     } catch (err) {
       return { ok: false, error: `JS 执行失败:${(err as Error).message}` };
     }
+  },
+
+  async assertPage(args: Record<string, unknown>): Promise<ToolResult> {
+    const rawAssertions = Array.isArray(args.assertions) ? (args.assertions as any[]) : [];
+    const acceptanceCriteria = toStr(args.acceptanceCriteria);
+    const results: any[] = [];
+    let allPassed = true;
+
+    // 1. 执行显式断言检查
+    for (const a of rawAssertions) {
+      const type = toStr(a.type);
+      const target = toStr(a.target).trim();
+      const desc = toStr(a.description || a.target);
+
+      if (type === 'text_contains') {
+        const pageText = document.body ? document.body.innerText : '';
+        const found = pageText.toLowerCase().includes(target.toLowerCase()) || Boolean(queryElement(undefined, target));
+        if (found) {
+          results.push({
+            id: a.id || `as_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            type,
+            description: desc,
+            expected: `页面包含「${target}」`,
+            actual: `页面已包含「${target}」`,
+            ok: true,
+          });
+        } else {
+          allPassed = false;
+          results.push({
+            id: a.id || `as_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            type,
+            description: desc,
+            expected: `页面包含「${target}」`,
+            actual: '未在页面中找到目标文本',
+            ok: false,
+            error: `文本断言未通过: 未找到「${target}」`,
+          });
+        }
+      } else if (type === 'url_contains') {
+        const currentUrl = window.location.href;
+        const matched = currentUrl.toLowerCase().includes(target.toLowerCase());
+        if (matched) {
+          results.push({
+            id: a.id || `as_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            type,
+            description: desc,
+            expected: `URL 包含「${target}」`,
+            actual: currentUrl,
+            ok: true,
+          });
+        } else {
+          allPassed = false;
+          results.push({
+            id: a.id || `as_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            type,
+            description: desc,
+            expected: `URL 包含「${target}」`,
+            actual: currentUrl,
+            ok: false,
+            error: `URL 断言未通过: 当前 URL (${currentUrl}) 未包含「${target}」`,
+          });
+        }
+      } else if (type === 'element_visible') {
+        const el = queryElement(target);
+        if (el && isElementVisible(el)) {
+          results.push({
+            id: a.id || `as_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            type,
+            description: desc,
+            expected: `元素可见「${target}」`,
+            actual: '元素存在且可见',
+            ok: true,
+          });
+        } else {
+          allPassed = false;
+          results.push({
+            id: a.id || `as_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            type,
+            description: desc,
+            expected: `元素可见「${target}」`,
+            actual: '未找到可见元素',
+            ok: false,
+            error: `元素可见性断言未通过: 未找到「${target}」`,
+          });
+        }
+      }
+    }
+
+    // 2. 底层健康度自动检测 (白屏 / DOM 节点数 / 页面标题)
+    const domCount = document.querySelectorAll('*').length;
+    const bodyText = (document.body?.innerText || '').trim();
+    const isWhiteScreen = domCount < 10 || bodyText.length === 0;
+
+    const health = {
+      pageUrl: window.location.href,
+      pageTitle: document.title,
+      isWhiteScreen,
+      domNodeCount: domCount,
+      consoleErrorsCount: 0,
+      consoleErrors: [],
+    };
+
+    if (isWhiteScreen) {
+      allPassed = false;
+    }
+
+    const passedCount = results.filter((r) => r.ok).length;
+
+    return {
+      ok: true,
+      data: {
+        allPassed: allPassed && (rawAssertions.length === 0 || passedCount === rawAssertions.length),
+        totalAssertions: rawAssertions.length,
+        passedAssertions: passedCount,
+        assertionsResults: results,
+        acceptanceCriteria,
+        systemHealth: health,
+      },
+    };
+  },
+
+  hideElement: async (args: Record<string, unknown>) => {
+    const selector = toStr(args.selector);
+    const targetText = toStr(args.targetText);
+    const el = queryElement(selector, targetText);
+    if (!el) {
+      return { ok: false, error: `未找到要隐藏的元素: ${selector || targetText}` };
+    }
+    const prevDisplay = el.style.display;
+    el.style.display = 'none';
+    return {
+      ok: true,
+      data: {
+        tagName: el.tagName.toLowerCase(),
+        previousDisplay: prevDisplay || 'block',
+        message: `已成功隐藏元素「${selector || targetText || el.tagName.toLowerCase()}」`,
+      },
+    };
+  },
+
+  removeElement: async (args: Record<string, unknown>) => {
+    const selector = toStr(args.selector);
+    const targetText = toStr(args.targetText);
+    const el = queryElement(selector, targetText);
+    if (!el) {
+      return { ok: false, error: `未找到要删除的元素: ${selector || targetText}` };
+    }
+    const tag = el.tagName.toLowerCase();
+    const parent = el.parentElement;
+    el.remove();
+    return {
+      ok: true,
+      data: {
+        tagName: tag,
+        parentTagName: parent?.tagName.toLowerCase() || 'none',
+        message: `已成功从页面 DOM 中彻底删除元素「${selector || targetText || tag}」`,
+      },
+    };
+  },
+
+  highlightElement: async (args: Record<string, unknown>) => {
+    const selector = toStr(args.selector);
+    const targetText = toStr(args.targetText);
+    const color = toStr(args.color) || '#3b82f6';
+    const durationMs = typeof args.durationMs === 'number' ? args.durationMs : 3000;
+    const persistent = Boolean(args.persistent);
+
+    const el = queryElement(selector, targetText);
+    if (!el) {
+      return { ok: false, error: `未找到要高亮的元素: ${selector || targetText}` };
+    }
+
+    if (persistent) {
+      el.style.outline = `3px solid ${color}`;
+      el.style.outlineOffset = '2px';
+      el.style.boxShadow = `0 0 16px ${color}`;
+    } else {
+      flashHighlight(el, color);
+      if (durationMs > 1800) {
+        el.style.outline = `3px solid ${color}`;
+        el.style.outlineOffset = '2px';
+        el.style.boxShadow = `0 0 16px ${color}`;
+        window.setTimeout(() => {
+          el.style.outline = '';
+          el.style.outlineOffset = '';
+          el.style.boxShadow = '';
+        }, durationMs);
+      }
+    }
+
+    try {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } catch {
+      /* ignore */
+    }
+
+    return {
+      ok: true,
+      data: {
+        tagName: el.tagName.toLowerCase(),
+        message: `已成功在页面上高亮标记元素「${selector || targetText || el.tagName.toLowerCase()}」`,
+      },
+    };
+  },
+
+  modifyElementStyle: async (args: Record<string, unknown>) => {
+    const selector = toStr(args.selector);
+    const targetText = toStr(args.targetText);
+    const styles = (args.styles as Record<string, string>) || {};
+    const el = queryElement(selector, targetText);
+    if (!el) {
+      return { ok: false, error: `未找到要修改样式的元素: ${selector || targetText}` };
+    }
+
+    const modifiedKeys: string[] = [];
+    for (const [key, value] of Object.entries(styles)) {
+      if (typeof value === 'string') {
+        (el.style as any)[key] = value;
+        modifiedKeys.push(`${key}: ${value}`);
+      }
+    }
+
+    return {
+      ok: true,
+      data: {
+        tagName: el.tagName.toLowerCase(),
+        modifiedStyles: modifiedKeys,
+        message: `已成功修改元素样式: ${modifiedKeys.join(', ')}`,
+      },
+    };
   },
 };

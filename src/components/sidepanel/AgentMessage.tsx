@@ -1,9 +1,15 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import type { AgentEvent } from '@/utils/ai/agentTypes';
 import { mdToHtml } from '@/utils/mdToHtml';
 import { AgentStepCard } from './AgentStepCard';
+import type { TabItem, ComparisonMode } from './TabSelector';
+import { TabSelector } from './TabSelector';
+import { TabManagerCard } from './TabManagerCard';
+import { WorkflowManagerCard } from './WorkflowManagerCard';
+import { PerformanceVisualCard } from './PerformanceVisualCard';
+import type { PerformanceMetricData } from '@/utils/reportExport';
 
-/** 渲染前清洗 AI 输出的 HTML:去 script/iframe/on* 属性,href 仅允许安全协议(防注入) */
+/** 渲染前清洗 AI 输出的 HTML:去 script/iframe/on* 属性,href 仅允许安全协议(防注入)并默认配置 target=_blank */
 function sanitizeHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -11,19 +17,11 @@ function sanitizeHtml(html: string): string {
     .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
     .replace(/\shref="[^"]*"/gi, (m) => {
       const url = m.replace(/\shref="/, '').replace(/"$/, '');
-      return /^(https?:|mailto:|#|\/)/i.test(url) ? m : ' href="#"';
+      return /^(https?:|mailto:|#|\/)/i.test(url)
+        ? ` href="${url}" target="_blank" rel="noopener noreferrer"`
+        : ' href="#"';
     });
 }
-
-import type { TabItem, ComparisonMode } from './TabSelector';
-import { TabSelector } from './TabSelector';
-import { PerformanceVisualCard } from './PerformanceVisualCard';
-import type { PerformanceMetricData } from '@/utils/reportExport';
-import { ArticleOutlineCard, type OutlineData } from './ArticleOutlineCard';
-import { FeishuPrdReviewCard, type PrdReviewData, type PrdReviewItem } from './FeishuPrdReviewCard';
-import { DocMarkdownExportCard } from './DocMarkdownExportCard';
-import type { DocMarkdownResult } from '@/utils/feishu/docToMarkdown';
-import { packageDocWithImagesAsZip, triggerZipDownload } from '@/utils/feishu/offlineDocPacker';
 
 interface Props {
   thinking: string;
@@ -35,7 +33,6 @@ interface Props {
   onConfirm: (confirmId: string, approved: boolean) => void;
   onCopy: () => void;
   onSelectTabs?: (tabs: TabItem[], mode: ComparisonMode) => void;
-  onAnchorClick?: (anchorId: string, title?: string) => void;
 }
 
 /** steps 中最后一条待处理的确认请求(其后无 confirm-result) */
@@ -58,7 +55,6 @@ export function AgentMessage({
   onConfirm,
   onCopy,
   onSelectTabs,
-  onAnchorClick,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const [showSteps, setShowSteps] = useState(debugMode);
@@ -77,39 +73,65 @@ export function AgentMessage({
     .pop();
   const tabList = (listTabsResult?.result.data as { tabs?: TabItem[] } | undefined)?.tabs;
 
-  // 判定是否处于多标签页对比/挑选场景
+  // 判定是否处于多标签页对比/挑选场景 (严格排查: 整理/分组/关闭等系统管理场景绝不展示对比勾选框)
   const isTabComparisonScenario = Boolean(
     !streaming &&
       text &&
       !text.includes('未检测到微信') &&
       !text.includes('未找到微信') &&
-      ((steps.length > 0 &&
-        steps.some(
-          (e) =>
-            e.type === 'tool-result' &&
-            e.call.name === 'listTabs' &&
-            e.result.ok &&
-            Array.isArray((e.result.data as any)?.tabs) &&
-            (e.result.data as any).tabs.length > 1,
-        ) &&
-        (text.includes('选择') ||
-          text.includes('对比') ||
-          text.includes('候选') ||
-          text.includes('哪个') ||
-          text.includes('请确认') ||
-          text.includes('请问您是指') ||
-          text.includes('指定') ||
-          text.includes('标签页') ||
-          text.includes('打开了') ||
-          text.includes('tabId'))) ||
-        (thinking &&
-          (thinking.includes('对比') ||
-            thinking.includes('总结') ||
-            thinking.includes('多标签') ||
-            thinking.includes('跨标签') ||
-            thinking.includes('挑选标签') ||
-            thinking.includes('查看当前打开') ||
-            thinking.includes('扫描标签页')))),
+      !text.includes('分组') &&
+      !text.includes('整理') &&
+      !text.includes('清理') &&
+      !text.includes('去重') &&
+      !text.includes('关闭') &&
+      !steps.some((e) => e.type === 'tool-result' && (e.call.name === 'groupTabs' || e.call.name === 'closeTabs')) &&
+      steps.some(
+        (e) =>
+          e.type === 'tool-result' &&
+          e.call.name === 'listTabs' &&
+          e.result.ok &&
+          Array.isArray((e.result.data as any)?.tabs) &&
+          (e.result.data as any).tabs.length > 1,
+      ) &&
+      (text.includes('对比') || text.includes('比对') || text.includes('横向比较') || text.includes('请勾选要对比')),
+  );
+
+  // 判定是否处于标签页整理/去重管理看板场景
+  const isTabManagerScenario = Boolean(
+    !streaming &&
+      tabList &&
+      tabList.length > 0 &&
+      !isTabComparisonScenario &&
+      !text?.includes('未检测到微信') &&
+      !text?.includes('未找到微信') &&
+      steps.some(
+        (e) =>
+          e.type === 'tool-result' &&
+          e.call.name === 'listTabs' &&
+          e.result.ok &&
+          Array.isArray((e.result.data as any)?.tabs),
+      ),
+  );
+
+  // 判定是否处于流程自动化 / 工作流管理看板场景 (严格匹配工具调用或明确的工作流意图，严禁在整理Tab时误触发)
+  const isWorkflowScenario = Boolean(
+    !streaming &&
+      !isTabManagerScenario &&
+      (steps.some(
+        (e) =>
+          e.type === 'tool-result' &&
+          [
+            'startWorkflowRecording',
+            'stopWorkflowRecording',
+            'listWorkflowRecipes',
+            'saveWorkflowRecipe',
+            'runWorkflowRecipe',
+          ].includes(e.call.name),
+      ) ||
+        text?.includes('自动化工作流') ||
+        text?.includes('工作流配方') ||
+        text?.includes('已开启流程录制') ||
+        text?.includes('已结束流程录制')),
   );
 
   // 提取所有的 getPagePerformance 结果(供渲染可视化时序瀑布流与导出 PDF)
@@ -123,163 +145,28 @@ export function AgentMessage({
     )
     .map((e) => e.result.data as PerformanceMetricData);
 
-  // 提取最新的 getArticleOutline 结果(供渲染交互式大纲与段落导航)
-  const outlineResult = steps
-    .filter(
-      (e): e is Extract<AgentEvent, { type: 'tool-result' }> =>
-        e.type === 'tool-result' &&
-        e.call.name === 'getArticleOutline' &&
-        e.result.ok &&
-        Boolean(e.result.data),
-    )
-    .pop();
-  const outlineData = outlineResult?.result.data as OutlineData | undefined;
-
-  // 提取 exportDocMarkdown 结果或从 Markdown 正文提取 (供渲染 Markdown 全文导出卡片)
-  const docExportData = useMemo<DocMarkdownResult | null>(() => {
-    const docExportResult = steps
-      .filter(
-        (e): e is Extract<AgentEvent, { type: 'tool-result' }> =>
-          e.type === 'tool-result' &&
-          e.call.name === 'exportDocMarkdown' &&
-          e.result.ok &&
-          Boolean(e.result.data),
-      )
-      .pop();
-
-    if (docExportResult?.result.data) {
-      const d = docExportResult.result.data as any;
-      return {
-        title: d.title || '飞书文档',
-        url: d.url || '',
-        markdown: d.markdown || text || '',
-        wordCount: d.wordCount || (d.markdown || text || '').length,
-        blockCount: d.blockCount || 1,
-        headingsCount: d.headingsCount || 0,
-      };
-    }
-
-    if (!text) return null;
-
-    // 当没有显式工具结果，但 AI 生成了成篇的 Markdown 文档正文时，自动挂载导出卡片供用户下载/打包
-    const hasHeadings = /^#{1,4}\s+.+/m.test(text);
-    const isDocLike =
-      hasHeadings &&
-      (text.length > 200 ||
-        text.includes('知识库') ||
-        text.includes('【PRD】') ||
-        text.includes('需求背景') ||
-        text.includes('流程') ||
-        text.includes('📎 附件') ||
-        text.includes('Markdown'));
-
-    if (isDocLike) {
-      const titleMatch = text.match(/^#\s+(.+)$/m);
-      const title = titleMatch ? titleMatch[1]!.replace(/^[【[](.*)[】\]]/, '$1').trim() : '导出文档';
-      const headingsCount = (text.match(/^#{1,6}\s+/gm) || []).length;
-      return {
-        title,
-        url: '',
-        markdown: text,
-        wordCount: text.length,
-        blockCount: text.split('\n\n').length,
-        headingsCount,
-      };
-    }
-
-    return null;
-  }, [steps, text]);
-
-  // 提取 PRD / 方案评审雷达数据 (强约束：仅在用户明确要求评审且包含显式评审标题时触发，文档导出绝不误触)
-  const prdReviewData: PrdReviewData | null = useMemo(() => {
-    if (!text || docExportData) return null;
-
-    // 必须包含显式的评审雷达专属标题 (严禁将普通的 # 【PRD】文档标题误当作评审)
-    const isExplicitPrdReview =
-      text.includes('🛡️ 飞书 PRD / 方案智能评审雷达') ||
-      text.includes('🛡️ PRD / 方案智能评审雷达') ||
-      text.includes('🛡️ PRD/方案智能评审雷达') ||
-      text.includes('【PRD评审雷达】') ||
-      text.includes('【PRD 评审雷达】') ||
-      text.includes('【需求评审雷达】') ||
-      text.includes('【架构评审雷达】');
-
-    if (!isExplicitPrdReview) {
-      return null;
-    }
-
-    const scoreMatch = text.match(/(?:综合质量评分|综合评分|质量评分)[：:\s]*([0-9]{1,3})/i);
-    if (!scoreMatch) {
-      return null;
-    }
-    const score = Math.min(100, Math.max(0, parseInt(scoreMatch[1]!, 10)));
-
-    const items: PrdReviewItem[] = [];
-    const lines = text.split('\n');
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (/[-*•]?\s*\[?🔴\s*(?:严重|死锁|漏洞)?\]?/i.test(trimmed) || /🔴/.test(trimmed)) {
-        const clean = trimmed.replace(/^[-*•]?\s*\[?🔴[^\]]*\]?\s*/, '').replace(/^\*\*|\*\*$/g, '');
-        const parts = clean.split(/[：:]/);
-        items.push({
-          type: 'critical',
-          title: (parts[0] || '逻辑缺陷').trim(),
-          desc: (parts.slice(1).join('：') || parts[0] || '').trim(),
-        });
-      } else if (/[-*•]?\s*\[?🟡\s*(?:警告|边界|遗漏)?\]?/i.test(trimmed) || /🟡/.test(trimmed)) {
-        const clean = trimmed.replace(/^[-*•]?\s*\[?🟡[^\]]*\]?\s*/, '').replace(/^\*\*|\*\*$/g, '');
-        const parts = clean.split(/[：:]/);
-        items.push({
-          type: 'warning',
-          title: (parts[0] || '边界遗漏').trim(),
-          desc: (parts.slice(1).join('：') || parts[0] || '').trim(),
-        });
-      } else if (/[-*•]?\s*\[?🟢\s*(?:建议|测试|验收)?\]?/i.test(trimmed) || /🟢/.test(trimmed)) {
-        const clean = trimmed.replace(/^[-*•]?\s*\[?🟢[^\]]*\]?\s*/, '').replace(/^\*\*|\*\*$/g, '');
-        const parts = clean.split(/[：:]/);
-        items.push({
-          type: 'suggestion',
-          title: (parts[0] || '验收建议').trim(),
-          desc: (parts.slice(1).join('：') || parts[0] || '').trim(),
-        });
-      }
-    }
-
-    const actionItems: string[] = [];
-    const actionMatches = text.match(/(?:[-*•]\s*\[\s*\]\s*|(?:\d+\.))\s*(.*?)(?=\n|$)/g);
-    if (actionMatches) {
-      for (const a of actionMatches) {
-        const clean = a.replace(/^[-*•\d.\s\[\]]+/, '').trim();
-        if (clean.length > 3 && !clean.includes('评分') && !clean.includes('http')) {
-          actionItems.push(clean);
-        }
-      }
-    }
-
-    if (items.length === 0 && actionItems.length === 0) return null;
-
-    return {
-      score,
-      summary: '已完成全篇逻辑拓扑与边界扫描，提取了关键改进意见与测试矩阵。',
-      items: items.slice(0, 10),
-      actionItems: actionItems.length > 0 ? actionItems.slice(0, 8) : items.map((i) => i.title).slice(0, 6),
-    };
-  }, [text]);
-
   const handleCopy = async () => {
     await onCopy();
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
 
+  /** 点击 Markdown 渲染区域中的链接直接在浏览器新标签页中打开 */
   const handleBodyClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const target = (e.target as HTMLElement).closest<HTMLElement>('.cite-anchor-badge, [data-anchor]');
-    if (target) {
-      const anchor = target.getAttribute('data-anchor');
-      if (anchor && onAnchorClick) {
-        e.preventDefault();
-        e.stopPropagation();
-        onAnchorClick(anchor);
+    const target = e.target as HTMLElement | null;
+    const anchor = target?.closest('a');
+    if (anchor && anchor.href && /^https?:/i.test(anchor.href)) {
+      e.preventDefault();
+      try {
+        if (typeof browser !== 'undefined' && browser.tabs?.create) {
+          void browser.tabs.create({ url: anchor.href });
+        } else if (typeof (globalThis as any).chrome?.tabs?.create === 'function') {
+          void (globalThis as any).chrome.tabs.create({ url: anchor.href });
+        } else {
+          window.open(anchor.href, '_blank', 'noopener,noreferrer');
+        }
+      } catch {
+        window.open(anchor.href, '_blank', 'noopener,noreferrer');
       }
     }
   };
@@ -352,33 +239,26 @@ export function AgentMessage({
       {/* 最终结果(Markdown 渲染;<br> 等 AI 常见换行标签先转成换行) */}
       {text && (
         <div
-          onClick={handleBodyClick}
           className="md-body"
+          onClick={handleBodyClick}
           dangerouslySetInnerHTML={{
             __html: sanitizeHtml(mdToHtml(text.replace(/<br\s*\/?>/gi, '\n'))),
           }}
         />
       )}
 
-      {/* 飞书/长文档 Markdown 全文提取与一键下载卡片 (导出场景专属展示) */}
-      {docExportData && (
-        <DocMarkdownExportCard data={docExportData} />
-      )}
-
-      {/* 沉浸式阅读:文章大纲与段落导航卡片 (仅在纯阅读/解读场景下展示，文档导出场景下严格隐藏) */}
-      {!docExportData && outlineData && onAnchorClick && (
-        <ArticleOutlineCard data={outlineData} onNavigate={onAnchorClick} />
-      )}
-
-      {/* 飞书 PRD / 架构方案智能评审雷达卡片 (仅在明确评审场景下展示) */}
-      {!docExportData && prdReviewData && (
-        <FeishuPrdReviewCard data={prdReviewData} />
-      )}
-
       {/* 交互式标签页复选框选择器(仅在明确对比意图下展示) */}
       {isTabComparisonScenario && tabList && onSelectTabs && (
         <TabSelector tabs={tabList} onConfirm={onSelectTabs} />
       )}
+
+      {/* 交互式标签页整理与去重看板 */}
+      {isTabManagerScenario && tabList && (
+        <TabManagerCard initialTabs={tabList} />
+      )}
+
+      {/* 流程自动化与工作流管理看板 */}
+      {isWorkflowScenario && <WorkflowManagerCard />}
 
       {/* 原生性能可视化瀑布图与一键导出 PDF 报告卡片 */}
       {perfMetrics.length > 0 && (

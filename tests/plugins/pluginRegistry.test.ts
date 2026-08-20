@@ -1,29 +1,46 @@
 import { describe, expect, it } from 'vitest';
 import { defaultPluginRegistry, PluginRegistry } from '../../src/plugins/registry';
-import { FeishuPlugin } from '../../src/plugins/feishu';
 import { WechatPlugin } from '../../src/plugins/wechat';
 import { DevToolPlugin } from '../../src/plugins/devtool';
-import { ReadingPlugin } from '../../src/plugins/reading';
+import { BrowserManagerPlugin } from '../../src/plugins/browser';
 import { buildAgentSystem, buildAgentTools } from '../../src/utils/ai/agents';
 
 describe('Plugin System (浏览器智能体插件架构)', () => {
-  it('defaultPluginRegistry: 成功注册 4 大内置生态插件', () => {
+  it('defaultPluginRegistry: 成功注册 3 大内置生态插件', () => {
     const plugins = defaultPluginRegistry.getAll();
-    expect(plugins.length).toBe(4);
-    expect(defaultPluginRegistry.get('feishu')).toBeDefined();
+    expect(plugins.length).toBe(3);
     expect(defaultPluginRegistry.get('wechat')).toBeDefined();
     expect(defaultPluginRegistry.get('devtool')).toBeDefined();
-    expect(defaultPluginRegistry.get('reading')).toBeDefined();
+    expect(defaultPluginRegistry.get('browser-manager')).toBeDefined();
   });
 
-  it('getActivePlugins: 针对飞书 URL 智能精准激活 FeishuPlugin + 全局插件', () => {
-    const active = defaultPluginRegistry.getActivePlugins('https://haiercash.feishu.cn/docx/abc123456');
-    const ids = active.map((p) => p.id);
-
-    expect(ids).toContain('feishu');
-    expect(ids).toContain('devtool');
-    expect(ids).toContain('reading');
-    expect(ids).not.toContain('wechat'); // 微信插件不应在飞书页面激活
+  it('BrowserManagerPlugin: 包含标签页/工作区/书签/历史/下载管理等系统级工具与快捷动作', () => {
+    const p = defaultPluginRegistry.get('browser-manager');
+    expect(p).toBeDefined();
+    expect(p?.tools?.length).toBe(21);
+    const toolNames = p?.tools?.map((t) => t.name) ?? [];
+    expect(toolNames).toContain('listTabs');
+    expect(toolNames).toContain('groupTabs');
+    expect(toolNames).toContain('closeTabs');
+    expect(toolNames).toContain('activateTab');
+    expect(toolNames).toContain('discardTabs');
+    expect(toolNames).toContain('saveWorkspace');
+    expect(toolNames).toContain('listWorkspaces');
+    expect(toolNames).toContain('restoreWorkspace');
+    expect(toolNames).toContain('deleteWorkspace');
+    expect(toolNames).toContain('getRecentlyClosedTabs');
+    expect(toolNames).toContain('restoreClosedTab');
+    expect(toolNames).toContain('clearBrowsingData');
+    expect(toolNames).toContain('moveTabsToNewWindow');
+    expect(toolNames).toContain('setTabZoom');
+    expect(toolNames).toContain('searchDownloads');
+    expect(toolNames).toContain('getBookmarksTree');
+    expect(toolNames).toContain('searchBookmarks');
+    expect(toolNames).toContain('createBookmark');
+    expect(toolNames).toContain('moveBookmark');
+    expect(toolNames).toContain('removeBookmark');
+    expect(toolNames).toContain('searchHistory');
+    expect(p?.quickActions?.length).toBeGreaterThanOrEqual(4);
   });
 
   it('getActivePlugins: 针对微信公众平台 URL 智能激活 WechatPlugin + 全局插件', () => {
@@ -32,27 +49,24 @@ describe('Plugin System (浏览器智能体插件架构)', () => {
 
     expect(ids).toContain('wechat');
     expect(ids).toContain('devtool');
-    expect(ids).toContain('reading');
-    expect(ids).not.toContain('feishu'); // 飞书插件不应在微信后台激活
+    expect(ids).toContain('browser-manager');
   });
 
   it('buildDynamicSystemPrompt: 根据当前 URL 动态裁剪与注入专属提示词', () => {
-    const feishuPrompt = defaultPluginRegistry.buildDynamicSystemPrompt('https://company.feishu.cn/wiki/doc');
-    expect(feishuPrompt).toContain('飞书办公与文档生态专属能力');
-    expect(feishuPrompt).not.toContain('微信公众号创作与草稿写入专属能力');
-
     const wechatPrompt = defaultPluginRegistry.buildDynamicSystemPrompt('https://mp.weixin.qq.com/appmsg');
     expect(wechatPrompt).toContain('微信公众号创作与草稿写入专属能力');
-    expect(wechatPrompt).not.toContain('飞书办公与文档生态专属能力');
+
+    const otherPrompt = defaultPluginRegistry.buildDynamicSystemPrompt('https://example.com');
+    expect(otherPrompt).not.toContain('微信公众号创作与草稿写入专属能力');
   });
 
   it('buildAgentSystem & buildAgentTools: 智能体系统提示词与工具列表动态组合', () => {
-    const feishuSys = buildAgentSystem('https://feishu.cn/docx/test');
-    expect(feishuSys).toContain('【核心基础能力】');
-    expect(feishuSys).toContain('飞书办公与文档生态专属能力');
+    const wechatSys = buildAgentSystem('https://mp.weixin.qq.com/appmsg');
+    expect(wechatSys).toContain('【核心基础能力】');
+    expect(wechatSys).toContain('微信公众号创作与草稿写入专属能力');
 
-    const tools = buildAgentTools('https://feishu.cn/docx/test');
-    expect(tools).toContain('exportDocMarkdown');
+    const tools = buildAgentTools('https://mp.weixin.qq.com/appmsg');
+    expect(tools).toContain('writeWechatDraft');
     expect(tools).toContain('readPage');
     expect(tools).toContain('getPagePerformance');
     expect(tools).not.toContain('evaluate');

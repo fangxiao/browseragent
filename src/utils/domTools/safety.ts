@@ -62,6 +62,42 @@ export function isSensitiveToolCall(
       }
       return { sensitive: false };
     }
+    case 'closeTabs': {
+      const tabIds = Array.isArray(call.args?.tabIds) ? call.args.tabIds : [];
+      if (tabIds.length >= 2) {
+        return { sensitive: true, reason: `批量关闭多个标签页(${tabIds.length} 个), 需用户确认` };
+      }
+      return { sensitive: false };
+    }
+    case 'removeBookmark': {
+      const id = String(call.args?.id ?? '');
+      const isFolder = Boolean(call.args?.isFolder);
+      return {
+        sensitive: true,
+        reason: isFolder ? `删除书签文件夹及内部所有子项(ID: ${id}), 需用户确认` : `删除书签(ID: ${id}), 需用户确认`,
+      };
+    }
+    case 'clearBrowsingData': {
+      const origins = Array.isArray(call.args?.origins) ? call.args.origins.join(', ') : '全局';
+      return {
+        sensitive: true,
+        reason: `清理浏览缓存与 Cookie 数据(${origins}), 需用户确认`,
+      };
+    }
+    case 'deleteWorkspace': {
+      const name = String(call.args?.nameOrId ?? '');
+      return {
+        sensitive: true,
+        reason: `删除工作区快照「${name}」, 需用户确认`,
+      };
+    }
+    case 'deleteWorkflowRecipe': {
+      const name = String(call.args?.nameOrId ?? '');
+      return {
+        sensitive: true,
+        reason: `删除自动化工作流「${name}」, 需用户确认`,
+      };
+    }
     case 'evaluate':
       // 通俗文案:普通用户看到的是"在页面上运行一段代码",而非"执行任意 JS"
       return { sensitive: true, reason: '在页面上运行一段代码(高级功能)' };

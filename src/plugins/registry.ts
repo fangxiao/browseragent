@@ -3,10 +3,9 @@
 
 import type { BrowserAgentPlugin, QuickAction } from './types';
 import type { ToolSpec } from '../utils/domTools/types';
-import { FeishuPlugin } from './feishu';
 import { WechatPlugin } from './wechat';
 import { DevToolPlugin } from './devtool';
-import { ReadingPlugin } from './reading';
+import { BrowserManagerPlugin } from './browser';
 
 export class PluginRegistry {
   private plugins = new Map<string, BrowserAgentPlugin>();
@@ -107,10 +106,9 @@ export class PluginRegistry {
   }
 }
 
-/** 全局默认单例 Plugin Registry (默认内置 4 大生态插件) */
+/** 全局默认单例 Plugin Registry (默认内置 3 大生态插件) */
 export const defaultPluginRegistry = new PluginRegistry([
-  FeishuPlugin,
   WechatPlugin,
   DevToolPlugin,
-  ReadingPlugin,
+  BrowserManagerPlugin,
 ]);

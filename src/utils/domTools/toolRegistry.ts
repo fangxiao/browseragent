@@ -33,7 +33,7 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
   ),
   define(
     'listTabs',
-    '获取当前浏览器窗口中打开的所有可用标签页列表(含 tabId/标题/URL)。用于多标签页横向对比、多网页跨页协同。',
+    '获取当前浏览器窗口中打开的所有可用标签页列表(含 tabId/标题/URL)。用于标签页全局整理去重、多标签页管理看板展示、多标签页横向对比。当用户提出“整理标签页/整理网页/查看当前标签/清理标签”时，只需调用此工具获取列表即可，无需调用 groupTabs。',
     {
       type: 'object',
       properties: {
@@ -92,6 +92,17 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
       },
     },
     ['selector', 'text'],
+  ),
+  define(
+    'pressEnter',
+    '在指定元素或当前焦点元素上按下回车键(Enter),用于表单提交或触发搜索。',
+    {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '可选,目标元素定位或选择器' },
+        targetText: { type: 'string', description: '可选,目标元素语义文案' },
+      },
+    },
   ),
   define(
     'scrollTo',
@@ -158,31 +169,6 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
     ['url'],
   ),
   define(
-    'getArticleOutline',
-    '智能提取长文/技术文档/文章页面的多级目录大纲树(H1~H4)、章节要点与段落锚点(anchorId)。用于长文速读、沉浸式阅读伴侣和精准论据溯源。',
-    {
-      type: 'object',
-      properties: {
-        selector: { type: 'string', description: '可选,限定正文容器选择器(如 article, main, .markdown-body)' },
-        fullScan: { type: 'boolean', description: '可选,是否自动对飞书/Notion等虚拟滚动长文档进行全量静默遍历大纲,默认 true' },
-        tabId: { type: 'number', description: '可选,指定目标标签页 ID(不传则读取当前标签页)' },
-      },
-    },
-  ),
-  define(
-    'highlightAndScrollTo',
-    '平滑滚动到网页中指定的段落或元素位置,并施加 2.5 秒柔和脉冲光晕高亮。用于长文论据精准溯源、段落定位、视觉引导。',
-    {
-      type: 'object',
-      properties: {
-        anchorId: { type: 'string', description: '可选,段落锚点 ID(由 getArticleOutline 返回,如 anchor-3)' },
-        selector: { type: 'string', description: '可选,CSS 选择器定位目标元素' },
-        textSnippet: { type: 'string', description: '可选,要匹配并高亮的原文关键词或特征语句' },
-        tabId: { type: 'number', description: '可选,指定目标标签页 ID(不传则操作当前激活标签页)' },
-      },
-    },
-  ),
-  define(
     'writeWechatDraft',
     '将内容经过微信专属精美排版(支持科技蓝/微信绿/极简黑/典雅紫等主题,含Mac终端代码块、双色标题、优雅引用框)后,自动写入微信公众平台(mp.weixin.qq.com)的图文草稿箱(填入标题、作者、120字摘要与富文本正文)。',
     {
@@ -203,15 +189,385 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
     },
   ),
   define(
-    'exportDocMarkdown',
-    '将飞书云文档 (feishu.cn/larksuite.com) 或当前网页长文全量转换为标准 Markdown 文本，并完整保留 H1~H6 标题、Callout 高亮块、表格 Table、待办清单 Todo、代码块 Code 与格式。支持一键复制与下载 .md。',
+    'groupTabs',
+    '【严格限制：仅当用户明确提出“分组/建立标签组/创建分组”时才可调用】将多个标签页聚合为一个具有语义色彩和名称的标签组(Tab Group)。【严禁】在用户提出“整理标签页/整理网页/去重/清理标签”等指令时擅自调用此工具。',
     {
       type: 'object',
       properties: {
-        textLimit: { type: 'number', description: '可选,最大转换字符上限,默认 100,000 字' },
-        tabId: { type: 'number', description: '可选,指定目标标签页 ID(不传则转换当前激活标签页)' },
+        tabIds: {
+          type: 'array',
+          items: { type: 'number' },
+          description: '要加入该分组的标签页 ID 列表',
+        },
+        title: {
+          type: 'string',
+          description: '标签组标题(建议附带 Emoji, 如 💻 开发调试、📖 研报阅读、🛒 电商比价)',
+        },
+        color: {
+          type: 'string',
+          enum: ['grey', 'blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'],
+          description: '可选, 标签组颜色, 默认 blue',
+        },
+        collapsed: {
+          type: 'boolean',
+          description: '可选, 分组后是否默认折叠以节省视口空间, 默认 false',
+        },
       },
     },
+    ['tabIds', 'title'],
+  ),
+  define(
+    'closeTabs',
+    '批量关闭指定的标签页。用于清理重复打开的相同网页、关闭已处理完毕的闲置标签、释放浏览器内存。批量关闭多个标签页时系统会自动触发安全确认。',
+    {
+      type: 'object',
+      properties: {
+        tabIds: {
+          type: 'array',
+          items: { type: 'number' },
+          description: '要关闭的标签页 ID 列表',
+        },
+        reason: {
+          type: 'string',
+          description: '可选, 关闭原因说明(如 清理重复项、关闭闲置任务页)',
+        },
+      },
+    },
+    ['tabIds'],
+    true,
+  ),
+  define(
+    'activateTab',
+    '切换并聚焦到指定的标签页(将其置于前台激活状态并聚焦浏览器窗口)。',
+    {
+      type: 'object',
+      properties: {
+        tabId: { type: 'number', description: '要激活的目标标签页 ID' },
+      },
+    },
+    ['tabId'],
+  ),
+  define(
+    'getBookmarksTree',
+    '获取浏览器的书签树状层级结构(包含文件夹名称、书签标题、URL 与 ID)。用于书签库健康度体检、分类重构分析与重复书签排查。',
+    {
+      type: 'object',
+      properties: {
+        parentId: { type: 'string', description: '可选, 指定根目录或文件夹 ID, 默认读取全部书签' },
+        maxDepth: { type: 'number', description: '可选, 最大递归深度, 默认 4' },
+      },
+    },
+  ),
+  define(
+    'searchBookmarks',
+    '在整个书签库中按关键词检索书签(匹配标题或 URL)。',
+    {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '搜索关键词或短语' },
+      },
+    },
+    ['query'],
+  ),
+  define(
+    'createBookmark',
+    '在指定位置创建新书签或新书签文件夹。',
+    {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '书签或文件夹的名称' },
+        url: { type: 'string', description: '网页网址(创建文件夹时不要传此字段)' },
+        parentId: { type: 'string', description: '可选, 父文件夹 ID(不传则放入默认书签栏)' },
+        index: { type: 'number', description: '可选, 在文件夹中的插入位置' },
+      },
+    },
+    ['title'],
+  ),
+  define(
+    'moveBookmark',
+    '移动书签至新的目标文件夹，或对书签/文件夹进行重命名。用于书签库重新分类与结构重组。',
+    {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '要操作的书签或文件夹 ID' },
+        parentId: { type: 'string', description: '可选, 目标文件夹 ID' },
+        index: { type: 'number', description: '可选, 在目标文件夹中的排序位置' },
+        title: { type: 'string', description: '可选, 重命名新标题' },
+      },
+    },
+    ['id'],
+  ),
+  define(
+    'removeBookmark',
+    '删除指定的书签或书签文件夹。操作前系统会弹出安全确认。',
+    {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '要删除的书签或文件夹 ID' },
+        isFolder: { type: 'boolean', description: '是否是文件夹(文件夹会连同子项一同清理)' },
+      },
+    },
+    ['id'],
+    true,
+  ),
+  define(
+    'searchHistory',
+    '按关键词与时间范围模糊检索浏览器的历史访问记录。用于根据用户的模糊记忆、时间点或主题快速找回之前看过的网页。',
+    {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '可选, 搜索关键词(匹配标题或 URL)' },
+        startTime: { type: 'number', description: '可选, 起始时间戳(毫秒数, 如 7 天前)' },
+        endTime: { type: 'number', description: '可选, 结束时间戳(毫秒数)' },
+        maxResults: { type: 'number', description: '可选, 最大返回条数, 默认 25, 最大 100' },
+      },
+    },
+  ),
+  define(
+    'discardTabs',
+    '休眠/挂起指定的标签页以释放浏览器内存(保留标签页标题与位置，点击时秒级唤醒)。若不传 tabIds，则默认休眠当前窗口所有非激活的闲置标签页。',
+    {
+      type: 'object',
+      properties: {
+        tabIds: {
+          type: 'array',
+          items: { type: 'number' },
+          description: '可选，要休眠挂起的标签页 ID 列表',
+        },
+      },
+    },
+  ),
+  define(
+    'saveWorkspace',
+    '将当前窗口的全部或指定标签页保存为一个命名的工作区会话快照(Workspace Snapshot)，便于未来一键还原恢复。',
+    {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '工作区名称(如「Q3技术调研」「电商比价」「日常办公」)' },
+        tabIds: {
+          type: 'array',
+          items: { type: 'number' },
+          description: '可选，要保存的标签页 ID 列表(不传则保存当前窗口全部可用标签页)',
+        },
+        closeAfterSave: {
+          type: 'boolean',
+          description: '可选，保存工作区后是否自动关闭这些标签页以清爽视口，默认 false',
+        },
+      },
+      required: ['name'],
+    },
+    ['name'],
+  ),
+  define(
+    'listWorkspaces',
+    '获取所有已保存的项目工作区会话快照列表(含名称、创建时间与包含的网页数量)。',
+    {
+      type: 'object',
+      properties: {},
+    },
+  ),
+  define(
+    'restoreWorkspace',
+    '一键恢复并打开之前保存的指定工作区快照中的所有标签页(支持自动恢复标签组)。',
+    {
+      type: 'object',
+      properties: {
+        nameOrId: { type: 'string', description: '目标工作区的名称或 ID' },
+        inNewWindow: { type: 'boolean', description: '可选，是否在新窗口中打开恢复，默认 false' },
+      },
+      required: ['nameOrId'],
+    },
+    ['nameOrId'],
+  ),
+  define(
+    'deleteWorkspace',
+    '删除指定的项目工作区快照。',
+    {
+      type: 'object',
+      properties: {
+        nameOrId: { type: 'string', description: '要删除的工作区名称或 ID' },
+      },
+      required: ['nameOrId'],
+    },
+    ['nameOrId'],
+    true,
+  ),
+  define(
+    'getRecentlyClosedTabs',
+    '获取浏览器最近意外关闭或误关的标签页列表(含标题、URL、关闭时间与 sessionId)。',
+    {
+      type: 'object',
+      properties: {
+        maxResults: { type: 'number', description: '可选，最大返回条数，默认 15' },
+      },
+    },
+  ),
+  define(
+    'restoreClosedTab',
+    '秒级召回/重新打开最近误关的网页(若指定 sessionId 则恢复该网页，不传则恢复最近关闭的第 1 个网页)。',
+    {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: '可选，目标已关闭标签页的 sessionId' },
+      },
+    },
+  ),
+  define(
+    'clearBrowsingData',
+    '精细化定向清理浏览器的缓存、Cookie 或本地存储。支持指定特定站点域名(如仅清理当前测试站点，不影响其他网站登录状态)。操作前系统会自动确认。',
+    {
+      type: 'object',
+      properties: {
+        origins: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '可选，指定要清理的站点源列表(如 ["https://localhost:3000"])，不传则清理全部',
+        },
+        dataTypes: {
+          type: 'array',
+          items: { type: 'string', enum: ['cache', 'cookies', 'localStorage', 'history'] },
+          description: '可选，要清理的数据类型列表，默认 ["cache", "cookies"]',
+        },
+        timeSince: {
+          type: 'number',
+          description: '可选，清理多久之前的数据(毫秒时间戳)，默认 0 即清理全部',
+        },
+      },
+    },
+    [],
+    true,
+  ),
+  define(
+    'moveTabsToNewWindow',
+    '将指定的多个标签页移至一个全新的独立浏览器窗口中(实现工作与娱乐多窗口分流)。',
+    {
+      type: 'object',
+      properties: {
+        tabIds: {
+          type: 'array',
+          items: { type: 'number' },
+          description: '要移出的标签页 ID 列表',
+        },
+        focused: {
+          type: 'boolean',
+          description: '可选，新窗口是否置顶聚焦，默认 true',
+        },
+      },
+      required: ['tabIds'],
+    },
+    ['tabIds'],
+  ),
+  define(
+    'setTabZoom',
+    '设置当前或指定标签页的页面缩放比例(如 1.1 为 110% 放大，0.9 为 90% 缩小，1.0 为恢复默认)。',
+    {
+      type: 'object',
+      properties: {
+        zoomFactor: {
+          type: 'number',
+          description: '缩放倍率(如 1.0, 1.1, 1.25, 1.5, 0.9, 0.8)',
+        },
+        tabId: {
+          type: 'number',
+          description: '可选，目标标签页 ID(不传则为当前页)',
+        },
+      },
+      required: ['zoomFactor'],
+    },
+    ['zoomFactor'],
+  ),
+  define(
+    'searchDownloads',
+    '检索浏览器的文件下载历史记录(按文件名、URL 或 MIME 类型)，定位已下载的文件。',
+    {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '可选，搜索关键词(匹配文件名或来源 URL)' },
+        mimeType: { type: 'string', description: '可选，文件类型过滤(如 application/pdf, image/png)' },
+        limit: { type: 'number', description: '可选，最大返回条数，默认 20' },
+      },
+    },
+  ),
+  define(
+    'hoverElement',
+    '模拟鼠标悬浮在指定元素上方(用于触发悬浮菜单、Tooltip、下拉展示等)。',
+    {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '目标元素 CSS 选择器或文本内容' },
+      },
+      required: ['selector'],
+    },
+    ['selector'],
+  ),
+  define(
+    'startWorkflowRecording',
+    '在当前或指定网页上开启自动化流程录制(实时捕获用户的点击、输入等拟人操作)。',
+    {
+      type: 'object',
+      properties: {
+        tabId: { type: 'number', description: '可选，目标标签页 ID' },
+      },
+    },
+  ),
+  define(
+    'stopWorkflowRecording',
+    '结束当前网页的流程录制，并返回提炼后的结构化工作流步骤列表。',
+    {
+      type: 'object',
+      properties: {
+        tabId: { type: 'number', description: '可选，目标标签页 ID' },
+      },
+    },
+  ),
+  define(
+    'saveWorkflowRecipe',
+    '保存一个命名的自动化工作流配方(Workflow Recipe)，便于未来随时一键重复回放。',
+    {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '工作流名称(如「每日打卡」「OA审批流转」)' },
+        steps: { type: 'array', items: { type: 'object' }, description: '工作流步骤清单' },
+        description: { type: 'string', description: '可选，工作流描述说明' },
+        urlPattern: { type: 'string', description: '可选，适用网页 URL 正则或域名' },
+      },
+      required: ['name', 'steps'],
+    },
+    ['name', 'steps'],
+  ),
+  define(
+    'listWorkflowRecipes',
+    '获取所有已保存的自动化工作流配方列表(含步骤数、适用网站与创建时间)。',
+    {
+      type: 'object',
+      properties: {},
+    },
+  ),
+  define(
+    'runWorkflowRecipe',
+    '在当前或指定网页上一键回放执行指定的自动化工作流配方(包含自愈定位与拟人操作流转)。',
+    {
+      type: 'object',
+      properties: {
+        nameOrId: { type: 'string', description: '要执行的工作流名称或 ID' },
+        tabId: { type: 'number', description: '可选，目标标签页 ID' },
+      },
+      required: ['nameOrId'],
+    },
+    ['nameOrId'],
+  ),
+  define(
+    'deleteWorkflowRecipe',
+    '删除指定的自动化工作流配方。',
+    {
+      type: 'object',
+      properties: {
+        nameOrId: { type: 'string', description: '要删除的工作流名称或 ID' },
+      },
+      required: ['nameOrId'],
+    },
+    ['nameOrId'],
+    true,
   ),
   define(
     'evaluate',
@@ -222,6 +578,73 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
     },
     ['js'],
     true,
+  ),
+  define(
+    'assertPage',
+    '对当前页面执行自动化测试断言(文本断言、URL断言、元素可见性断言及白屏健康检查)。用于自动化测试用例验收。',
+    {
+      type: 'object',
+      properties: {
+        assertions: {
+          type: 'array',
+          description: '断言规则列表',
+        },
+        acceptanceCriteria: { type: 'string', description: '自然语言测试验收标准' },
+      },
+    },
+  ),
+  define(
+    'hideElement',
+    '隐藏当前页面上指定的元素(将其 CSS 设置为 display: none)。用于隐藏烦人的广告横幅、遮挡弹窗、遮罩层或侧边浮动栏。',
+    {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '目标元素 CSS 选择器或定位标识' },
+        targetText: { type: 'string', description: '可选，目标元素的文本内容或包含文字' },
+      },
+    },
+  ),
+  define(
+    'removeElement',
+    '从当前页面的 DOM 树中彻底删除指定的元素。用于移除顽固遮罩、侵入式弹窗或不需要的页面节点。',
+    {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '目标元素 CSS 选择器或定位标识' },
+        targetText: { type: 'string', description: '可选，目标元素的文本内容或包含文字' },
+      },
+    },
+  ),
+  define(
+    'highlightElement',
+    '在页面上高亮标记并平滑定位聚焦指定的元素(为其添加醒目的边框与阴影效果)。用于指引用户关注特定区域或定位查找到的内容。',
+    {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '目标元素 CSS 选择器或定位标识' },
+        targetText: { type: 'string', description: '可选，目标元素的文本内容' },
+        color: { type: 'string', description: '可选，高亮颜色(如 #3b82f6 或 red)，默认 #3b82f6' },
+        durationMs: { type: 'number', description: '可选，高亮持续时间(毫秒)，默认 3000' },
+        persistent: { type: 'boolean', description: '可选，是否持久保持高亮，默认 false' },
+      },
+    },
+  ),
+  define(
+    'modifyElementStyle',
+    '动态修改当前页面指定元素的 CSS 样式属性(如 width, height, backgroundColor, zIndex, opacity 等)。用于页面临时定制、排版微调与去遮挡。',
+    {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '目标元素 CSS 选择器或定位标识' },
+        targetText: { type: 'string', description: '可选，目标元素的文本内容' },
+        styles: {
+          type: 'object',
+          description: '要修改的 CSS 样式键值对(如 {"zIndex": "999", "backgroundColor": "#fff"})',
+        },
+      },
+      required: ['styles'],
+    },
+    ['styles'],
   ),
 ];
 

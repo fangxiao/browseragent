@@ -12,16 +12,19 @@ const EXEC_MAP: Record<string, (args: Record<string, unknown>) => Promise<ToolRe
   findElements: actions.findElements,
   clickElement: actions.clickElement,
   typeInto: actions.typeInto,
+  pressEnter: actions.pressEnter,
   scrollTo: actions.scrollTo,
   waitFor: actions.waitFor,
   sleep: actions.sleep,
   extractData: actions.extractData,
   navigate: actions.navigate,
-  getArticleOutline: actions.getArticleOutline,
-  highlightAndScrollTo: actions.highlightAndScrollTo,
   writeWechatDraft: actions.writeWechatDraft,
-  exportDocMarkdown: actions.exportDocMarkdown,
   evaluate: actions.evaluate,
+  assertPage: actions.assertPage,
+  hideElement: actions.hideElement,
+  removeElement: actions.removeElement,
+  highlightElement: actions.highlightElement,
+  modifyElementStyle: actions.modifyElementStyle,
 };
 
 export function createDomExecutor(opts: { allowEvaluate?: boolean } = {}): DomToolExecutor {
