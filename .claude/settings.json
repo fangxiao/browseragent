@@ -1,0 +1,24 @@
+{
+  "env": {
+    "HUB_AGENT": "browser-agent",
+    "HUB_HOME": "/Users/admin/work/project/agent-hub"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(hub:*)",
+      "Bash(/Users/admin/work/project/agent-hub/hub:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/admin/work/project/agent-hub/hub hook-session-start"
+          }
+        ]
+      }
+    ]
+  }
+}
