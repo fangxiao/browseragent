@@ -24,7 +24,10 @@ export type ToolResponse = { type: 'TOOL:RESULT'; callId: string; result: ToolRe
 export type BgRequest =
   | { type: 'SETTINGS:GET' }
   | { type: 'SETTINGS:SAVE'; settings: AiSettings }
-  | { type: 'OPEN_SIDEPANEL' };
+  | { type: 'OPEN_SIDEPANEL' }
+  | { type: 'TUNNEL:GET_STATUS' }
+  | { type: 'TUNNEL:RECONNECT' }
+  | { type: 'TUNNEL:AUTO_DETECT_TOKEN' };
 
 export type BgResponse =
   | { type: 'SETTINGS:RESULT'; settings: AiSettings }

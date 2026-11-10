@@ -11,6 +11,10 @@ export const DEFAULT_SETTINGS: AiSettings = {
   rememberSession: true,
   trustedSession: false,
   debugMode: false,
+  platformHost: 'http://localhost:8000',
+  platformToken: '',
+  tunnelUrl: 'ws://localhost:8000/api/browser/tunnel',
+  enableTunnel: true,
 };
 
 export async function getSettings(): Promise<AiSettings> {
