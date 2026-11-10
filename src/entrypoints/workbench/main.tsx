@@ -22,6 +22,8 @@ import {
   saveTestSkill,
   deleteTestSkill,
   clearAllWorkflowsAndSkills,
+  exportWorkflowRecipesJson,
+  importWorkflowRecipesJson,
 } from '@/utils/workflow/storage';
 import { sendWorkflowMessageToTab } from '@/utils/workflow/client';
 
@@ -133,7 +135,12 @@ function interpolateStep(step: WorkflowStep, variables: Record<string, string>):
     val = val.replace(reg, v);
     desc = desc.replace(reg, v);
   }
-  return { ...step, value: val, description: desc };
+  return {
+    ...step,
+    value: val,
+    description: desc,
+    subSteps: step.subSteps ? step.subSteps.map((sub) => interpolateStep(sub, variables)) : undefined,
+  };
 }
 
 function downloadFile(content: string, filename: string, mime = 'text/html;charset=utf-8') {
@@ -296,6 +303,13 @@ export function WorkbenchApp() {
   const [skillsList, setSkillsList] = useState<TestSkillTemplate[]>([]);
   const [activeNav, setActiveNav] = useState<'rpa' | 'qa' | 'skills' | 'reports'>('rpa');
   const [searchQuery, setSearchQuery] = useState('');
+  const [editingSkill, setEditingSkill] = useState<{
+    id: string;
+    name: string;
+    targetUrl: string;
+    acceptanceCriteria: string;
+    assertions: TestAssertion[];
+  } | null>(null);
   const [selectedRecipeId, setSelectedRecipeId] = useState<string | null>(null);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
 
@@ -388,7 +402,23 @@ export function WorkbenchApp() {
 
         let res: any;
         try {
-          if (step.type === 'click') {
+          if (step.isLoop) {
+            res = await sendWorkflowMessageToTab(currentTabId, {
+              type: 'TOOL:CALL',
+              call: {
+                id: `loop_${Date.now()}`,
+                name: 'loopElements',
+                args: {
+                  selector: step.selector,
+                  itemSelector: step.loopItemSelector,
+                  subSteps: step.subSteps,
+                  maxItems: step.maxLoopCount || 50,
+                  delayMs: step.waitMs || 400,
+                  onItemError: step.onItemError || 'skip',
+                },
+              },
+            });
+          } else if (step.type === 'click') {
             res = await sendWorkflowMessageToTab(currentTabId, {
               type: 'TOOL:CALL',
               call: {
@@ -851,6 +881,35 @@ export function WorkbenchApp() {
   };
 
   /** 删除自定义 Skill */
+  const handleStartEditSkill = (skill: TestSkillTemplate) => {
+    setEditingSkill({
+      id: skill.id,
+      name: skill.name,
+      targetUrl: skill.targetUrl || '',
+      acceptanceCriteria: skill.acceptanceCriteria || '',
+      assertions: [...skill.assertions],
+    });
+  };
+
+  const handleSaveEditSkill = async () => {
+    if (!editingSkill || !editingSkill.name.trim()) return;
+    try {
+      await saveTestSkill(
+        editingSkill.name.trim(),
+        editingSkill.acceptanceCriteria.trim(),
+        editingSkill.assertions,
+        undefined,
+        editingSkill.targetUrl.trim() || undefined,
+        editingSkill.id,
+      );
+      await refreshData();
+      setEditingSkill(null);
+      setStatusMsg({ type: 'success', text: `💾 已成功更新 Skill「${editingSkill.name}」！` });
+    } catch (err) {
+      setStatusMsg({ type: 'error', text: `更新失败: ${(err as Error).message}` });
+    }
+  };
+
   const handleDeleteSkill = async (id: string, name: string) => {
     if (!confirm(`确定要删除 Skill「${name}」吗？`)) return;
     try {
@@ -881,6 +940,50 @@ export function WorkbenchApp() {
     } catch (err) {
       setStatusMsg({ type: 'error', text: `导入失败: ${(err as Error).message}` });
     }
+  };
+
+  /** 导出所有工作流配方为 JSON 文件 */
+  const handleExportAllWorkflows = async () => {
+    try {
+      const json = await exportWorkflowRecipesJson();
+      const blob = new Blob([json], { type: 'application/json;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `browseragent-workflows-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatusMsg({ type: 'success', text: '📤 已成功导出工作流配方 JSON 文件！' });
+    } catch (err) {
+      setStatusMsg({ type: 'error', text: `导出失败: ${(err as Error).message}` });
+    }
+  };
+
+  /** 从本地 JSON 文件导入工作流配方 */
+  const handleImportWorkflowsFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      const content = evt.target?.result as string;
+      if (!content) return;
+      const res = await importWorkflowRecipesJson(content);
+      if (res.importedCount > 0) {
+        await refreshData();
+        setStatusMsg({
+          type: 'success',
+          text: `📥 成功导入 ${res.importedCount} 个工作流配方！${res.errors.length > 0 ? ` (存在 ${res.errors.length} 条警告)` : ''}`,
+        });
+      } else {
+        setStatusMsg({
+          type: 'error',
+          text: `导入失败: ${res.errors.join('; ') || '文件格式不符合工作流规范'}`,
+        });
+      }
+    };
+    reader.readAsText(file);
+    // 重置 input 以便再次选择同一文件
+    e.target.value = '';
   };
 
   return (
@@ -917,11 +1020,27 @@ export function WorkbenchApp() {
             <b className="text-blue-400">{skillsList.length}</b>
           </div>
 
+          <label className="flex items-center gap-1 rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 transition-all cursor-pointer">
+            <span>📥</span>
+            <span>导入配方 JSON</span>
+            <input type="file" accept=".json,application/json" onChange={handleImportWorkflowsFile} className="hidden" />
+          </label>
+
+          <button
+            onClick={() => void handleExportAllWorkflows()}
+            disabled={recipes.length === 0}
+            className="flex items-center gap-1 rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 transition-all cursor-pointer disabled:opacity-50"
+            title="导出所有工作流为 JSON 备份或跨端分享"
+          >
+            <span>📤</span>
+            <span>导出 JSON</span>
+          </button>
+
           <button
             onClick={() => setShowImportSkillModal(true)}
             className="flex items-center gap-1 rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700 transition-all cursor-pointer"
           >
-            <span>📥</span>
+            <span>✨</span>
             <span>导入 Skill / Markdown</span>
           </button>
 
@@ -1361,15 +1480,43 @@ export function WorkbenchApp() {
                       </div>
                       <div className="min-w-0 flex-1 space-y-1">
                         <div className="flex items-center justify-between">
-                          <span className="font-semibold text-slate-200">{step.description}</span>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-semibold text-slate-200">{step.description}</span>
+                            {step.isLoop && (
+                              <span className="rounded bg-purple-950 border border-purple-500 text-purple-300 px-1.5 py-0.2 text-[9.5px] font-bold">
+                                🔁 批量循环遍历
+                              </span>
+                            )}
+                          </div>
                           <span className="rounded bg-slate-800 px-1.5 py-0.2 text-[10px] font-mono text-slate-400">
                             {step.type}
                           </span>
                         </div>
                         <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-400">
-                          <div className="truncate">选择器: <code className="text-slate-300">{step.selector || '-'}</code></div>
+                          <div className="truncate">选择器: <code className="text-slate-300">{step.selector || step.loopItemSelector || '-'}</code></div>
                           {step.value && <div className="truncate">输入值: <code className="text-purple-300">{step.value}</code></div>}
                         </div>
+                        {step.isLoop && step.subSteps && step.subSteps.length > 0 && (
+                          <div className="mt-2 space-y-1 bg-slate-950/70 p-2 rounded border border-purple-900/40">
+                            <div className="text-[10px] text-purple-300 font-semibold flex items-center gap-1">
+                              <span>🔁</span>
+                              <span>针对列表每一项循环执行 ({step.subSteps.length} 个子动作):</span>
+                            </div>
+                            <div className="space-y-1 pl-2 border-l border-purple-800/40">
+                              {step.subSteps.map((sub, sIdx) => (
+                                <div key={sIdx} className="flex items-center gap-2 text-[10.5px] text-slate-300">
+                                  <span className="font-mono text-purple-400 font-bold">{sIdx + 1}.</span>
+                                  <span>{sub.description}</span>
+                                  {sub.value && (
+                                    <code className="text-purple-300 bg-purple-950/80 px-1 rounded text-[10px]">
+                                      {sub.value}
+                                    </code>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1377,69 +1524,215 @@ export function WorkbenchApp() {
               </div>
             </div>
           ) : activeNav === 'skills' && selectedSkill ? (
-            /* Skill 详情面板 */
+            /* Skill 详情与在线微调编辑器面板 */
             <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-                <div>
-                  <div className="flex items-center gap-2.5">
-                    <h2 className="text-xl font-bold text-white tracking-tight">{selectedSkill.name}</h2>
-                    <span className="rounded bg-blue-950 border border-blue-700 text-blue-300 px-2 py-0.5 text-xs font-semibold">
-                      {selectedSkill.isPreset ? '内置预设' : '自定义'}
-                    </span>
-                  </div>
-                  {selectedSkill.targetUrl && (
-                    <div className="text-xs text-slate-400 mt-1 flex items-center gap-1.5 min-w-0">
-                      <span className="shrink-0">目标网页:</span>
-                      <b
-                        title={selectedSkill.targetUrl}
-                        className="text-blue-400 font-mono max-w-xs sm:max-w-sm md:max-w-md truncate inline-block cursor-help bg-slate-950 px-2 py-0.5 rounded border border-slate-800"
+              {editingSkill && editingSkill.id === selectedSkill.id ? (
+                /* Skill 在线可视化编辑模式 (Studio Mode) */
+                <div className="rounded-2xl border border-blue-600/80 bg-slate-950 p-6 space-y-5 shadow-2xl">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">✏️</span>
+                      <h3 className="text-base font-bold text-white">微调与定制业务 Skill 规则</h3>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setEditingSkill(null)}
+                        className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 cursor-pointer"
                       >
-                        {selectedSkill.targetUrl}
-                      </b>
+                        取消
+                      </button>
+                      <button
+                        onClick={() => void handleSaveEditSkill()}
+                        className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-blue-500 shadow-md cursor-pointer"
+                      >
+                        💾 保存修改
+                      </button>
                     </div>
-                  )}
-                </div>
+                  </div>
 
-                <div className="flex items-center gap-2">
-                  {!selectedSkill.isPreset && (
-                    <button
-                      onClick={() => void handleDeleteSkill(selectedSkill.id, selectedSkill.name)}
-                      className="rounded-lg border border-rose-900/60 bg-rose-950/30 px-3 py-1.5 text-xs font-medium text-rose-300 hover:bg-rose-900/50 cursor-pointer"
-                    >
-                      🗑️ 删除 Skill
-                    </button>
-                  )}
-                  <button
-                    onClick={() => void executeSkillRun(selectedSkill)}
-                    className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-blue-500 shadow-md cursor-pointer"
-                  >
-                    🧪 对目标页执行全量验收
-                  </button>
-                </div>
-              </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-300">Skill 名称:</label>
+                      <input
+                        type="text"
+                        value={editingSkill.name}
+                        onChange={(e) => setEditingSkill({ ...editingSkill, name: e.target.value })}
+                        className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-slate-300">目标页面 URL (可选):</label>
+                      <input
+                        type="text"
+                        value={editingSkill.targetUrl}
+                        onChange={(e) => setEditingSkill({ ...editingSkill, targetUrl: e.target.value })}
+                        placeholder="https://..."
+                        className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
 
-              {selectedSkill.acceptanceCriteria && (
-                <div className="rounded-xl bg-slate-950 p-4 border border-slate-800 text-xs space-y-1">
-                  <div className="font-bold text-blue-400">验收目标标准:</div>
-                  <div className="text-slate-200">{selectedSkill.acceptanceCriteria}</div>
-                </div>
-              )}
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-slate-300">业务验收标准与 SOP 指令描述:</label>
+                    <textarea
+                      rows={3}
+                      value={editingSkill.acceptanceCriteria}
+                      onChange={(e) => setEditingSkill({ ...editingSkill, acceptanceCriteria: e.target.value })}
+                      placeholder="描述该 Skill 的操作 SOP 与业务目标(如：进入已审批页面，循环遍历全部记录)..."
+                      className="w-full rounded-lg border border-slate-700 bg-slate-900 p-3 text-xs text-white outline-none focus:border-blue-500 leading-relaxed font-sans"
+                    />
+                  </div>
 
-              <div className="rounded-xl bg-slate-950 p-4 border border-slate-800 space-y-3">
-                <div className="font-bold text-white text-xs">断言检查项清单 ({selectedSkill.assertions.length} 条):</div>
-                <div className="space-y-2">
-                  {selectedSkill.assertions.map((a, idx) => (
-                    <div key={a.id || idx} className="flex items-center justify-between bg-slate-900 p-2.5 rounded-lg border border-slate-800 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-blue-400">{idx + 1}.</span>
-                        <span className="rounded bg-blue-950 border border-blue-800 px-1.5 py-0.2 text-[10px] text-blue-300 font-mono">{a.type}</span>
-                        <span className="text-slate-200">{a.description}</span>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-semibold text-slate-300">
+                        断言检查规则 ({editingSkill.assertions.length} 条):
+                      </label>
+                      <button
+                        onClick={() => {
+                          const newAs: TestAssertion = {
+                            id: `as_${Date.now()}`,
+                            type: 'text_contains',
+                            target: '',
+                            description: '页面包含指定文本',
+                          };
+                          setEditingSkill({
+                            ...editingSkill,
+                            assertions: [...editingSkill.assertions, newAs],
+                          });
+                        }}
+                        className="text-xs text-blue-400 hover:text-blue-300 font-medium hover:underline cursor-pointer"
+                      >
+                        + 添加断言规则
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      {editingSkill.assertions.map((a, idx) => (
+                        <div key={a.id || idx} className="flex items-center gap-2 bg-slate-900 p-2.5 rounded-lg border border-slate-800 text-xs">
+                          <select
+                            value={a.type}
+                            onChange={(e) => {
+                              const updated = [...editingSkill.assertions];
+                              updated[idx] = { ...updated[idx]!, type: e.target.value as any };
+                              setEditingSkill({ ...editingSkill, assertions: updated });
+                            }}
+                            className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-blue-300 outline-none"
+                          >
+                            <option value="text_contains">包含文本</option>
+                            <option value="element_visible">元素可见</option>
+                            <option value="url_contains">URL 包含</option>
+                            <option value="no_console_error">无报错</option>
+                          </select>
+                          <input
+                            type="text"
+                            placeholder="匹配目标 (如 审批成功 或 选择器)"
+                            value={a.target}
+                            onChange={(e) => {
+                              const updated = [...editingSkill.assertions];
+                              updated[idx] = { ...updated[idx]!, target: e.target.value };
+                              setEditingSkill({ ...editingSkill, assertions: updated });
+                            }}
+                            className="flex-1 rounded border border-slate-700 bg-slate-950 px-2.5 py-1 text-xs text-white outline-none focus:border-blue-500"
+                          />
+                          <input
+                            type="text"
+                            placeholder="描述说明"
+                            value={a.description || ''}
+                            onChange={(e) => {
+                              const updated = [...editingSkill.assertions];
+                              updated[idx] = { ...updated[idx]!, description: e.target.value };
+                              setEditingSkill({ ...editingSkill, assertions: updated });
+                            }}
+                            className="w-1/3 rounded border border-slate-700 bg-slate-950 px-2.5 py-1 text-xs text-slate-300 outline-none focus:border-blue-500"
+                          />
+                          <button
+                            onClick={() => {
+                              const updated = editingSkill.assertions.filter((_, i) => i !== idx);
+                              setEditingSkill({ ...editingSkill, assertions: updated });
+                            }}
+                            className="text-slate-500 hover:text-rose-400 p-1 text-xs cursor-pointer"
+                            title="删除该断言"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* Skill 正常展示模式 */
+                <>
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+                    <div>
+                      <div className="flex items-center gap-2.5">
+                        <h2 className="text-xl font-bold text-white tracking-tight">{selectedSkill.name}</h2>
+                        <span className="rounded bg-blue-950 border border-blue-700 text-blue-300 px-2 py-0.5 text-xs font-semibold">
+                          {selectedSkill.isPreset ? '内置预设' : '自定义'}
+                        </span>
                       </div>
-                      <span className="font-mono text-slate-400 text-[11px]">目标: <code>{a.target}</code></span>
+                      {selectedSkill.targetUrl && (
+                        <div className="text-xs text-slate-400 mt-1 flex items-center gap-1.5 min-w-0">
+                          <span className="shrink-0">目标网页:</span>
+                          <b
+                            title={selectedSkill.targetUrl}
+                            className="text-blue-400 font-mono max-w-xs sm:max-w-sm md:max-w-md truncate inline-block cursor-help bg-slate-950 px-2 py-0.5 rounded border border-slate-800"
+                          >
+                            {selectedSkill.targetUrl}
+                          </b>
+                        </div>
+                      )}
                     </div>
-                  ))}
-                </div>
-              </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleStartEditSkill(selectedSkill)}
+                        className="rounded-lg border border-blue-800/80 bg-blue-950/40 px-3 py-1.5 text-xs font-medium text-blue-300 hover:bg-blue-900/60 cursor-pointer transition-all"
+                      >
+                        ✏️ 编辑微调 Skill
+                      </button>
+                      {!selectedSkill.isPreset && (
+                        <button
+                          onClick={() => void handleDeleteSkill(selectedSkill.id, selectedSkill.name)}
+                          className="rounded-lg border border-rose-900/60 bg-rose-950/30 px-3 py-1.5 text-xs font-medium text-rose-300 hover:bg-rose-900/50 cursor-pointer"
+                        >
+                          🗑️ 删除
+                        </button>
+                      )}
+                      <button
+                        onClick={() => void executeSkillRun(selectedSkill)}
+                        className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-blue-500 shadow-md cursor-pointer"
+                      >
+                        🧪 对目标页执行全量验收
+                      </button>
+                    </div>
+                  </div>
+
+                  {selectedSkill.acceptanceCriteria && (
+                    <div className="rounded-xl bg-slate-950 p-4 border border-slate-800 text-xs space-y-1">
+                      <div className="font-bold text-blue-400">验收目标标准 / SOP:</div>
+                      <div className="text-slate-200 leading-relaxed">{selectedSkill.acceptanceCriteria}</div>
+                    </div>
+                  )}
+
+                  <div className="rounded-xl bg-slate-950 p-4 border border-slate-800 space-y-3">
+                    <div className="font-bold text-white text-xs">断言检查项清单 ({selectedSkill.assertions.length} 条):</div>
+                    <div className="space-y-2">
+                      {selectedSkill.assertions.map((a, idx) => (
+                        <div key={a.id || idx} className="flex items-center justify-between bg-slate-900 p-2.5 rounded-lg border border-slate-800 text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-blue-400">{idx + 1}.</span>
+                            <span className="rounded bg-blue-950 border border-blue-800 px-1.5 py-0.2 text-[10px] text-blue-300 font-mono">{a.type}</span>
+                            <span className="text-slate-200">{a.description}</span>
+                          </div>
+                          <span className="font-mono text-slate-400 text-[11px]">目标: <code>{a.target}</code></span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           ) : activeNav === 'reports' ? (
             /* 测试套件大屏视图 */

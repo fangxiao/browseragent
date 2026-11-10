@@ -545,12 +545,13 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
   ),
   define(
     'runWorkflowRecipe',
-    '在当前或指定网页上一键回放执行指定的自动化工作流配方(包含自愈定位与拟人操作流转)。',
+    '在当前或指定网页上一键回放执行指定的自动化工作流配方(包含自愈定位与拟人操作流转，支持动态变量入参)。',
     {
       type: 'object',
       properties: {
         nameOrId: { type: 'string', description: '要执行的工作流名称或 ID' },
         tabId: { type: 'number', description: '可选，目标标签页 ID' },
+        variables: { type: 'object', description: '可选，动态参数变量键值对(替换步骤中的 {{key}} 占位符)' },
       },
       required: ['nameOrId'],
     },
@@ -568,6 +569,122 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
     },
     ['nameOrId'],
     true,
+  ),
+  define(
+    'captureMarkedScreen',
+    '【视觉多模态 Grounding】对当前网页打上 Set-of-Marks 数字编号标记并截取视口图像，返回带编号的截图与元素索引清单。用于 Canvas/富图表/复杂组件定位。',
+    {
+      type: 'object',
+      properties: {
+        maxMarks: { type: 'number', description: '可选，最大标记数量，默认 40' },
+        tabId: { type: 'number', description: '可选，目标标签页 ID' },
+      },
+    },
+  ),
+  define(
+    'clickMark',
+    '【视觉多模态 Grounding】根据视觉标记数字编号点击对应元素(结合 captureMarkedScreen 识别出的编号直接指挥点击)。',
+    {
+      type: 'object',
+      properties: {
+        markId: { type: 'number', description: '要点击的视觉标记数字编号(如 1, 2, 5...)' },
+      },
+      required: ['markId'],
+    },
+    ['markId'],
+  ),
+  define(
+    'clickCoordinate',
+    '【高保真坐标交互】在页面指定屏幕客户端坐标 (x, y) 触发精确点击流(支持 Canvas 图表、地图、无 DOM 选择器的富交互元素)。',
+    {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: '点击目标横坐标 clientX' },
+        y: { type: 'number', description: '点击目标纵坐标 clientY' },
+      },
+      required: ['x', 'y'],
+    },
+    ['x', 'y'],
+  ),
+  define(
+    'startNetworkRecording',
+    '【CDP 深度网络截获】通过 Chrome DevTools Protocol 开启底层网络请求截获与 API 抓取。',
+    {
+      type: 'object',
+      properties: {
+        tabId: { type: 'number', description: '可选，目标标签页 ID' },
+        filterUrls: { type: 'array', items: { type: 'string' }, description: '可选，需过滤包含的 URL 关键词' },
+        maxRequests: { type: 'number', description: '可选，最大记录请求数，默认 100' },
+      },
+    },
+  ),
+  define(
+    'stopNetworkRecording',
+    '【CDP 深度网络截获】结束 CDP 网络截获并提取核心 API 接口列表及响应体数据。',
+    {
+      type: 'object',
+      properties: {
+        tabId: { type: 'number', description: '可选，目标标签页 ID' },
+        fetchBodies: { type: 'boolean', description: '可选，是否提取 API 响应体内容，默认 true' },
+      },
+    },
+  ),
+  define(
+    'mockNetworkResponse',
+    '【CDP 接口 Mock】通过 Chrome DevTools Protocol 拦截指定 URL 请求并返回 Mock 模拟响应数据。',
+    {
+      type: 'object',
+      properties: {
+        urlPattern: { type: 'string', description: '要拦截的 URL 匹配通配模式(如 */api/user/*)' },
+        responseJson: { type: 'object', description: '要返回的 JSON 数据对象' },
+        responseBody: { type: 'string', description: '自定义文本响应体(若指定则优先于 responseJson)' },
+        statusCode: { type: 'number', description: 'HTTP 状态码，默认 200' },
+        contentType: { type: 'string', description: '响应 Content-Type，默认 application/json; charset=utf-8' },
+        tabId: { type: 'number', description: '可选，目标标签页 ID' },
+      },
+      required: ['urlPattern'],
+    },
+    ['urlPattern'],
+    true,
+  ),
+  define(
+    'emulateDevice',
+    '【CDP 设备模拟】通过 Chrome DevTools Protocol 切换视口分辨率与 User-Agent(模拟手机/平板环境)。',
+    {
+      type: 'object',
+      properties: {
+        width: { type: 'number', description: '视口宽度(如 iPhone 14 为 390)' },
+        height: { type: 'number', description: '视口高度(如 iPhone 14 为 844)' },
+        deviceScaleFactor: { type: 'number', description: '像素比缩放因子，默认 2' },
+        mobile: { type: 'boolean', description: '是否为移动端模式，默认 true' },
+        userAgent: { type: 'string', description: '可选，自定义 User-Agent 字符串' },
+        tabId: { type: 'number', description: '可选，目标标签页 ID' },
+      },
+      required: ['width', 'height'],
+    },
+    ['width', 'height'],
+  ),
+  define(
+    'exportWorkflowRecipes',
+    '导出已保存的自动化工作流配方为标准 JSON 格式字符串(支持指定 recipeIds 过滤)。',
+    {
+      type: 'object',
+      properties: {
+        recipeIds: { type: 'array', items: { type: 'string' }, description: '可选，要导出的工作流 ID 列表(留空则导出全部)' },
+      },
+    },
+  ),
+  define(
+    'importWorkflowRecipes',
+    '从 JSON 字符串批量导入自动化工作流配方。',
+    {
+      type: 'object',
+      properties: {
+        json: { type: 'string', description: '符合规范的工作流配方 JSON 字符串' },
+      },
+      required: ['json'],
+    },
+    ['json'],
   ),
   define(
     'evaluate',
@@ -645,6 +762,25 @@ const TOOLS: Omit<ToolSpec, 'execute'>[] = [
       required: ['styles'],
     },
     ['styles'],
+  ),
+  define(
+    'loopElements',
+    '批量循环遍历当前页面上的同构列表项或表格行(自动查找当前可见的所有记录并逐一执行点击/查看或子步骤流转操作)。用于批量审批、批量浏览、长表格逐项检查等循环业务场景。',
+    {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: '列表项或包含行的 CSS 选择器' },
+        itemSelector: { type: 'string', description: '可选，列表项的具体条目选择器(如 table tbody tr 或 ul.list li)' },
+        subSteps: {
+          type: 'array',
+          description: '可选，针对每一项需要重复执行的子动作序列(如点击详情、输入审批意见、点击提交)',
+          items: { type: 'object' },
+        },
+        maxItems: { type: 'number', description: '可选，最大遍历条数，默认 30' },
+        delayMs: { type: 'number', description: '可选，每条记录处理间隔时间(毫秒)，默认 500' },
+        onItemError: { type: 'string', description: '可选，单项处理失败策略 (skip 跳过继续下一条 / stop 中断)' },
+      },
+    },
   ),
 ];
 

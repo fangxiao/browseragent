@@ -25,6 +25,7 @@ const EXEC_MAP: Record<string, (args: Record<string, unknown>) => Promise<ToolRe
   removeElement: actions.removeElement,
   highlightElement: actions.highlightElement,
   modifyElementStyle: actions.modifyElementStyle,
+  loopElements: actions.loopElements,
 };
 
 export function createDomExecutor(opts: { allowEvaluate?: boolean } = {}): DomToolExecutor {

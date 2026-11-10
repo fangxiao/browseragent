@@ -50,6 +50,15 @@ describe('toolRegistry(工具注册表)', () => {
       'listWorkflowRecipes',
       'runWorkflowRecipe',
       'deleteWorkflowRecipe',
+      'exportWorkflowRecipes',
+      'importWorkflowRecipes',
+      'captureMarkedScreen',
+      'clickMark',
+      'clickCoordinate',
+      'startNetworkRecording',
+      'stopNetworkRecording',
+      'mockNetworkResponse',
+      'emulateDevice',
       'evaluate',
     ]) {
       expect(names).toContain(n);

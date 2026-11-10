@@ -1,4 +1,4 @@
-// 侧边栏极简伴随式流程与测试遥控器 (Companion Remote Bar for Sidepanel)
+// 侧边栏极简伴随式流程自动化 (Companion Flow Automation Bar for Sidepanel)
 import React, { useEffect, useState } from 'react';
 import type {
   WorkflowRecipe,
@@ -14,13 +14,18 @@ import {
   listWorkflowRecipes,
   saveWorkflowRecipe,
   deleteWorkflowRecipe,
+  startActiveRecordingSession,
   getActiveRecordingSession,
   stopActiveRecordingSession,
   listTestSkills,
   saveTestSkill,
+  interpolateStepVariables,
+  exportWorkflowRecipesJson,
+  importWorkflowRecipesJson,
 } from '@/utils/workflow/storage';
 import { buildWorkflowSteps } from '@/utils/workflow/recorder';
 import { sendWorkflowMessageToTab } from '@/utils/workflow/client';
+import { distillHabitWithLLM, type DistilledHabit } from '@/utils/workflow/skillDistiller';
 
 export function isQaRecipe(r: WorkflowRecipe): boolean {
   if (r.mode === 'qa') return true;
@@ -75,16 +80,6 @@ async function waitForTabReady(tabId: number, timeoutMs = 8000): Promise<void> {
   await new Promise((r) => setTimeout(r, 350));
 }
 
-function interpolateStep(step: WorkflowStep, variables: Record<string, string>): WorkflowStep {
-  let val = step.value || '';
-  let desc = step.description;
-  for (const [k, v] of Object.entries(variables)) {
-    const reg = new RegExp(`{{\\s*${k}\\s*}}`, 'g');
-    val = val.replace(reg, v);
-    desc = desc.replace(reg, v);
-  }
-  return { ...step, value: val, description: desc };
-}
 
 /** 从录制步骤中智能提炼业务 Skill 规则 */
 function distillSkillFromSteps(steps: WorkflowStep[], startUrl: string): {
@@ -92,16 +87,28 @@ function distillSkillFromSteps(steps: WorkflowStep[], startUrl: string): {
   acceptanceCriteria: string;
   assertions: TestAssertion[];
 } {
-  let defaultName = '智能业务自动化 Skill';
+  const hasLoop = steps.some((s) => s.isLoop);
+  let defaultName = hasLoop ? '智能批量遍历与流转 Skill' : '智能业务自动化 Skill';
+
   if (/italent|beisen|北森/i.test(startUrl)) {
-    defaultName = '北森待办智能审批与流转 Skill';
+    defaultName = hasLoop ? '北森已审批记录全量遍历 Skill' : '北森待办智能审批与流转 Skill';
   } else if (/baidu|百度/i.test(startUrl)) {
     defaultName = '百度搜索与官方结果跳转 Skill';
   } else if (/oa|审批|workflow/i.test(startUrl)) {
-    defaultName = 'OA 协同流程自动化 Skill';
+    defaultName = hasLoop ? 'OA 列表全量巡检与批量审批 Skill' : 'OA 协同流程自动化 Skill';
   }
 
   const assertions: TestAssertion[] = [];
+
+  if (hasLoop) {
+    assertions.push({
+      id: `as_distill_loop_${Date.now()}`,
+      type: 'element_visible',
+      target: 'table, .ant-table, .ant-list, ul.list',
+      description: '成功定位并展示目标记录列表/表格',
+    });
+  }
+
   const textKeywords = steps
     .map((s) => s.targetText?.trim())
     .filter((t): t is string => Boolean(t && t.length >= 2 && !/^(svg|button|div|span|input|click)$/i.test(t)));
@@ -130,9 +137,14 @@ function distillSkillFromSteps(steps: WorkflowStep[], startUrl: string): {
     }
   }
 
-  const criteria = steps.length > 0
-    ? `完成 ${steps.map((s) => s.description).join(' -> ')}，并确保关键节点正确响应`
-    : '成功完成业务流程操作并校验页面正常响应';
+  let criteria = '';
+  if (hasLoop) {
+    criteria = '进入目标页面 -> 切换至对应业务视图 -> 自动循环遍历当前列表/表格中的全部记录项并逐一查看';
+  } else if (steps.length > 0) {
+    criteria = `完成 ${steps.map((s) => s.description).join(' -> ')}，并确保关键节点正确响应`;
+  } else {
+    criteria = '成功完成业务流程操作并校验页面正常响应';
+  }
 
   return { defaultName, acceptanceCriteria: criteria, assertions };
 }
@@ -141,10 +153,21 @@ export function WorkflowManagerCard() {
   const [recipes, setRecipes] = useState<WorkflowRecipe[]>([]);
   const [skillsList, setSkillsList] = useState<TestSkillTemplate[]>([]);
   const [isRecording, setIsRecording] = useState(false);
+  const [recordingCount, setRecordingCount] = useState(0);
   const [recordedSteps, setRecordedSteps] = useState<WorkflowStep[]>([]);
+  const [rawRecordedSteps, setRawRecordedSteps] = useState<WorkflowStep[]>([]);
   const [recordedStartUrl, setRecordedStartUrl] = useState('');
   const [newRecipeName, setNewRecipeName] = useState('');
+  const [customCriteria, setCustomCriteria] = useState('');
   const [saveMode, setSaveMode] = useState<'rpa' | 'qa' | 'skill'>('skill');
+
+  // AI 习惯归纳状态
+  const [distilledHabit, setDistilledHabit] = useState<DistilledHabit | null>(null);
+  const [isBatchPattern, setIsBatchPattern] = useState(false);
+  const [loopItemSelector, setLoopItemSelector] = useState('table tbody tr');
+  const [subSteps, setSubSteps] = useState<WorkflowStep[]>([]);
+  const [parameters, setParameters] = useState<RecipeParameter[]>([]);
+  const [showSubStepsDetails, setShowSubStepsDetails] = useState(false);
 
   // 新生成 Skill 反显卡片
   const [lastCreatedSkill, setLastCreatedSkill] = useState<TestSkillTemplate | null>(null);
@@ -169,6 +192,7 @@ export function WorkflowManagerCard() {
       const activeSession = await getActiveRecordingSession();
       if (activeSession && activeSession.isRecording) {
         setIsRecording(true);
+        setRecordingCount(activeSession.actions?.length || 0);
       }
     } catch {
       /* ignore */
@@ -178,6 +202,27 @@ export function WorkflowManagerCard() {
   useEffect(() => {
     void refreshAllData();
   }, []);
+
+  // 录制过程中实时轮询捕获动作计数 (与 content 脚本及 background 保持毫秒级同步)
+  useEffect(() => {
+    if (!isRecording) {
+      setRecordingCount(0);
+      return;
+    }
+    const pollCount = async () => {
+      try {
+        const session = await getActiveRecordingSession();
+        if (session && session.isRecording) {
+          setRecordingCount(session.actions?.length || 0);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    void pollCount();
+    const timer = setInterval(pollCount, 600);
+    return () => clearInterval(timer);
+  }, [isRecording]);
 
   /** 开启录制 */
   const handleStartRecord = async () => {
@@ -210,6 +255,11 @@ export function WorkflowManagerCard() {
         }
 
         if (activeTab?.id) {
+          // 1. 侧边栏直接预建立活跃持久化录制会话
+          await startActiveRecordingSession(activeTab.id, activeTab.url);
+          setRecordingCount(0);
+
+          // 2. 向目标网页发送启动指令
           const res = await sendWorkflowMessageToTab(activeTab.id, { type: 'WORKFLOW:START_RECORDING' });
           setIsRecording(true);
           setStatusMsg({
@@ -225,7 +275,7 @@ export function WorkflowManagerCard() {
     }
   };
 
-  /** 停止录制 */
+  /** 停止录制并智能调用 AI 归纳习惯 */
   const handleStopRecord = async () => {
     try {
       let res: { ok: boolean; steps: WorkflowStep[]; actionCount: number; startUrl?: string } | null = null;
@@ -242,24 +292,52 @@ export function WorkflowManagerCard() {
         }
       }
 
+      let rawActions: any[] = [];
       if (!res || !res.steps || res.steps.length === 0) {
-        const { actions: rawActions, startUrl } = await stopActiveRecordingSession();
+        const sessionRes = await stopActiveRecordingSession();
+        rawActions = sessionRes.actions;
         if (rawActions.length > 0) {
           const steps = buildWorkflowSteps(rawActions);
-          res = { ok: true, steps, actionCount: rawActions.length, startUrl };
+          res = { ok: true, steps, actionCount: rawActions.length, startUrl: sessionRes.startUrl };
         }
       }
 
       setIsRecording(false);
       if (res && res.steps && res.steps.length > 0) {
         const startUrl = res.startUrl || res.steps[0]?.url || '';
-        const distilled = distillSkillFromSteps(res.steps, startUrl);
-        setRecordedSteps(res.steps);
+        setStatusMsg({ type: 'info', text: '🧠 AI 正在根据您的操作示范智能归纳自动化习惯...' });
+
+        let habit: DistilledHabit;
+        try {
+          habit = await distillHabitWithLLM(rawActions, res.steps, startUrl);
+        } catch {
+          const fallback = distillSkillFromSteps(res.steps, startUrl);
+          habit = {
+            name: fallback.defaultName,
+            description: fallback.acceptanceCriteria,
+            isBatchPattern: res.steps.some((s) => s.isLoop),
+            steps: res.steps,
+            acceptanceCriteria: fallback.acceptanceCriteria,
+            assertions: fallback.assertions,
+          };
+        }
+
+        setDistilledHabit(habit);
+        setIsBatchPattern(Boolean(habit.isBatchPattern));
+        setLoopItemSelector(habit.loopTarget?.selector || 'table tbody tr');
+        setSubSteps(habit.subSteps || []);
+        setParameters(habit.parameters || []);
+        setRecordedSteps(habit.steps);
+        setRawRecordedSteps(res.steps);
         setRecordedStartUrl(startUrl);
-        setNewRecipeName(distilled.defaultName);
+        setNewRecipeName(habit.name);
+        setCustomCriteria(habit.acceptanceCriteria || '');
         setSaveMode('skill'); // 默认推荐提炼为 Skill
         setShowSaveModal(true);
-        setStatusMsg({ type: 'success', text: `✅ 录制完成！捕获 ${res.steps.length} 步操作，可直接提炼为 AI Skill` });
+        setStatusMsg({
+          type: 'success',
+          text: `✅ 录制完成！AI 已归纳为「${habit.name}」(${habit.isBatchPattern ? '🔁 批量循环' : '⚡ 线性流程'})`,
+        });
       } else {
         setStatusMsg({ type: 'info', text: '录制已结束，未捕获到操作步骤' });
       }
@@ -271,27 +349,52 @@ export function WorkflowManagerCard() {
 
   /** 保存录制为配方并自动串联绑定 Skill */
   const handleSave = async (openWorkbenchAfter = false) => {
-    if (!newRecipeName.trim() || recordedSteps.length === 0) return;
+    if (!newRecipeName.trim()) return;
     try {
       const name = newRecipeName.trim();
-      const distilled = distillSkillFromSteps(recordedSteps, recordedStartUrl);
+      const habit = distilledHabit;
 
       // 1. 生成并存入 Skill 库 (提炼出的业务规则与断言)
+      const assertionsToSave = habit?.assertions || [];
+      const criteriaToSave = customCriteria.trim() || habit?.acceptanceCriteria || '自动执行业务操作并校验结果';
       const savedSkill = await saveTestSkill(
         `${name} 验收规则`,
-        distilled.acceptanceCriteria,
-        distilled.assertions,
-        `由 ${recordedSteps.length} 步操作示范提炼的业务 Skill`,
+        criteriaToSave,
+        assertionsToSave,
+        habit?.description || `由 ${recordedSteps.length} 步操作示范提炼的业务 Skill`,
         recordedStartUrl,
       );
 
-      // 2. 同时生成 RPA/QA 流程，并【自动串联绑定】该 Skill 规则与验收标准
-      const savedRecipe = await saveWorkflowRecipe(name, recordedSteps, {
+      // 2. 构建步骤序列: 如果开启了批量循环模式，保留前置导航步骤并打包批量步骤
+      let stepsToSave: WorkflowStep[] = recordedSteps;
+      if (isBatchPattern) {
+        const preSteps = recordedSteps.filter((s) => !s.isLoop);
+        stepsToSave = [
+          ...preSteps,
+          {
+            id: `step_loop_${preSteps.length + 1}`,
+            type: 'loop',
+            description: `🔁 自动批量循环遍历「${loopItemSelector.trim()}」并执行流转`,
+            isLoop: true,
+            loopItemSelector: loopItemSelector.trim() || 'table tbody tr',
+            subSteps: subSteps.length > 0 ? subSteps : undefined,
+            maxLoopCount: 50,
+            onItemError: 'skip',
+            loopSummary: habit?.description,
+          },
+        ];
+      } else {
+        stepsToSave = rawRecordedSteps.length > 0 ? rawRecordedSteps : recordedSteps;
+      }
+
+      // 3. 同时生成 RPA/QA 流程，并【自动串联绑定】该 Skill 规则与验收标准
+      const savedRecipe = await saveWorkflowRecipe(name, stepsToSave, {
         mode: saveMode === 'qa' ? 'qa' : 'rpa',
-        startUrl: recordedStartUrl || recordedSteps[0]?.url,
+        startUrl: recordedStartUrl || stepsToSave[0]?.url,
+        parameters: parameters.length > 0 ? parameters : habit?.parameters,
         assertions: savedSkill.assertions,
         acceptanceCriteria: savedSkill.acceptanceCriteria,
-        description: `包含 ${recordedSteps.length} 步操作，已自动串联「${savedSkill.name}」`,
+        description: habit?.description || `包含 ${stepsToSave.length} 步操作，已自动串联「${savedSkill.name}」`,
       });
 
       await refreshAllData();
@@ -299,9 +402,10 @@ export function WorkflowManagerCard() {
       setShowSaveModal(false);
       setRecordedSteps([]);
       setNewRecipeName('');
+      setDistilledHabit(null);
       setStatusMsg({
         type: 'success',
-        text: `✨ 已保存「${savedRecipe.name}」并自动串联「${savedSkill.name}」！`,
+        text: `✨ 已保存「${savedRecipe.name}」并自动沉淀为 Skill！`,
       });
       if (openWorkbenchAfter) {
         openWorkbench(saveMode === 'qa' ? 'qa' : 'rpa');
@@ -383,7 +487,7 @@ export function WorkflowManagerCard() {
 
       for (const rawStep of recipe.steps) {
         stepIndex++;
-        const step = interpolateStep(rawStep, variables);
+        const step = interpolateStepVariables(rawStep, variables);
         setStatusMsg({
           type: 'info',
           text: `▶️ [${stepIndex}/${recipe.steps.length}] ${step.description}...`,
@@ -404,7 +508,23 @@ export function WorkflowManagerCard() {
 
         let res: any;
         try {
-          if (step.type === 'click') {
+          if (step.isLoop) {
+            res = await sendWorkflowMessageToTab(currentTabId, {
+              type: 'TOOL:CALL',
+              call: {
+                id: `run_loop_${Date.now()}`,
+                name: 'loopElements',
+                args: {
+                  selector: step.selector,
+                  itemSelector: step.loopItemSelector,
+                  subSteps: step.subSteps,
+                  maxItems: step.maxLoopCount || 50,
+                  delayMs: step.waitMs || 400,
+                  onItemError: step.onItemError || 'skip',
+                },
+              },
+            });
+          } else if (step.type === 'click') {
             res = await sendWorkflowMessageToTab(currentTabId, {
               type: 'TOOL:CALL',
               call: { id: `run_${Date.now()}`, name: 'clickElement', args: { selector: step.selector, targetText: step.targetText } },
@@ -412,23 +532,22 @@ export function WorkflowManagerCard() {
           } else if (step.type === 'type') {
             res = await sendWorkflowMessageToTab(currentTabId, {
               type: 'TOOL:CALL',
-              call: { id: `run_${Date.now()}`, name: 'typeInto', args: { selector: step.selector, targetText: step.targetText, text: step.value || '', humanLike: true } },
+              call: {
+                id: `run_${Date.now()}`,
+                name: 'typeInto',
+                args: { selector: step.selector, targetText: step.targetText, text: step.value || '', humanLike: true },
+              },
             });
           } else if (step.type === 'pressEnter') {
             res = await sendWorkflowMessageToTab(currentTabId, {
               type: 'TOOL:CALL',
               call: { id: `run_${Date.now()}`, name: 'pressEnter', args: { selector: step.selector, targetText: step.targetText } },
             });
-          } else if (step.type === 'hover') {
-            res = await sendWorkflowMessageToTab(currentTabId, {
-              type: 'TOOL:CALL',
-              call: { id: `run_${Date.now()}`, name: 'hoverElement', args: { selector: step.selector, targetText: step.targetText } },
-            });
           }
         } catch (stepErr) {
           const isNavClose = /closed before a response was received|message channel closed/i.test((stepErr as Error).message || '');
           if (isNavClose && (step.type === 'click' || step.type === 'pressEnter')) {
-            res = { result: { ok: true, note: '触发了页面跳转' } };
+            res = { result: { ok: true, note: '操作触发了页面跳转' } };
           } else {
             res = { result: { ok: false, error: (stepErr as Error).message } };
           }
@@ -439,6 +558,34 @@ export function WorkflowManagerCard() {
           setStatusMsg({ type: 'error', text: `⚠️ 步骤 ${stepIndex} 未执行成功: ${res.result.error || '未找到目标元素'}` });
         }
         await new Promise((r) => setTimeout(r, 400));
+      }
+
+      // 如果绑定了 Skill，执行业务结果校验
+      if (!hasStepError && recipe.assertions && recipe.assertions.length > 0) {
+        try {
+          const assertRes = await sendWorkflowMessageToTab(lastTabId, {
+            type: 'TOOL:CALL',
+            call: {
+              id: `rpa_assert_${Date.now()}`,
+              name: 'assertPage',
+              args: { assertions: recipe.assertions, acceptanceCriteria: recipe.acceptanceCriteria || '' },
+            },
+          });
+          const assertData = assertRes?.result?.data || {};
+          const passedAssertions = assertData.passedAssertions ?? (assertData.assertionsResults || []).filter((a: any) => a.ok).length;
+          const totalAssertions = recipe.assertions.length;
+          const isSkillPass = passedAssertions === totalAssertions;
+
+          setStatusMsg({
+            type: isSkillPass ? 'success' : 'error',
+            text: isSkillPass
+              ? `🎉 代办「${recipe.name}」已全部执行完毕并通过业务 Skill 校验！`
+              : `⚠️ 代办动作已执行，但业务 Skill 校验未完全通过 (${passedAssertions}/${totalAssertions})`,
+          });
+          return;
+        } catch {
+          /* ignore */
+        }
       }
 
       if (!hasStepError) {
@@ -481,7 +628,12 @@ export function WorkflowManagerCard() {
 
         let res: any;
         try {
-          if (step.type === 'click') {
+          if (step.isLoop) {
+            res = await sendWorkflowMessageToTab(currentTabId, {
+              type: 'TOOL:CALL',
+              call: { id: `test_loop_${Date.now()}`, name: 'loopElements', args: { selector: step.selector, itemSelector: step.loopItemSelector } },
+            });
+          } else if (step.type === 'click') {
             res = await sendWorkflowMessageToTab(currentTabId, {
               type: 'TOOL:CALL',
               call: { id: `test_${Date.now()}`, name: 'clickElement', args: { selector: step.selector, targetText: step.targetText } },
@@ -552,7 +704,7 @@ export function WorkflowManagerCard() {
       <div className="flex items-center justify-between pb-1.5 border-b border-gray-100">
         <div className="flex items-center gap-1.5">
           <span className="text-sm">⚡</span>
-          <span className="font-semibold text-gray-900 text-xs">快捷自动化遥控器</span>
+          <span className="font-semibold text-gray-900 text-xs">流程自动化</span>
         </div>
         <div className="flex items-center gap-1.5">
           {!isRecording ? (
@@ -571,7 +723,7 @@ export function WorkflowManagerCard() {
               title="完成录制并提炼为 Skill 或配方"
             >
               <span>⏹️</span>
-              <span>完成录制</span>
+              <span>完成录制{recordingCount > 0 ? ` (${recordingCount} 步)` : ''}</span>
             </button>
           )}
         </div>
@@ -621,82 +773,205 @@ export function WorkflowManagerCard() {
         </div>
       )}
 
-      {/* 录制完成保存弹窗 (支持提炼为 AI Skill、RPA 或 QA) */}
+      {/* 录制完成保存与习惯微调弹窗 */}
       {showSaveModal && (
         <div className="rounded-lg border border-purple-200 bg-purple-50/70 p-3 space-y-2.5 animate-in fade-in">
           <div className="flex items-center justify-between text-purple-950 font-bold text-[11.5px]">
-            <span>录制完成 ({recordedSteps.length} 个步骤):</span>
+            <div className="flex items-center gap-1.5">
+              <span>🧠 AI 习惯归纳与微调</span>
+              {isBatchPattern ? (
+                <span className="rounded bg-blue-100 border border-blue-300 text-blue-800 px-1.5 py-0.2 text-[9.5px] font-bold">
+                  🔁 批量循环遍历
+                </span>
+              ) : (
+                <span className="rounded bg-gray-100 border border-gray-300 text-gray-700 px-1.5 py-0.2 text-[9.5px]">
+                  ⚡ 线性单次执行
+                </span>
+              )}
+            </div>
             <button onClick={() => setShowSaveModal(false)} className="text-gray-400 hover:text-gray-600">✕</button>
           </div>
 
-          {/* 模式切换 (默认推荐提炼为 AI 智能 Skill) */}
-          <div className="grid grid-cols-3 gap-1">
+          {/* AI 归纳意图说明提示 */}
+          {distilledHabit && (
+            <div className="rounded bg-white border border-purple-200/80 p-2 text-[10.5px] space-y-1">
+              <div className="font-semibold text-purple-950 flex items-center gap-1">
+                <span>💡</span>
+                <span>{distilledHabit.description}</span>
+              </div>
+              {distilledHabit.reasoning && (
+                <div className="text-[9.5px] text-gray-500 leading-tight">
+                  {distilledHabit.reasoning}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 模式选择 */}
+          <div className="grid grid-cols-2 gap-1.5">
             <button
-              onClick={() => setSaveMode('skill')}
-              className={`py-1 rounded border text-[10px] font-bold transition-all ${
-                saveMode === 'skill'
+              onClick={() => {
+                setIsBatchPattern(true);
+                if (distilledHabit?.steps) setRecordedSteps(distilledHabit.steps);
+              }}
+              className={`py-1 px-2 rounded border text-[10px] font-bold transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                isBatchPattern
                   ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
                   : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
               }`}
             >
-              🧠 提炼 AI Skill
+              <span>🔁 批量循环模式</span>
+              <span className="text-[9px] opacity-80">
+                ({recordedSteps.filter((s) => !s.isLoop).length > 0 ? `${recordedSteps.filter((s) => !s.isLoop).length}步导航 + ` : ''}批量审批)
+              </span>
             </button>
             <button
-              onClick={() => setSaveMode('rpa')}
-              className={`py-1 rounded border text-[10px] font-medium transition-all ${
-                saveMode === 'rpa'
+              onClick={() => {
+                setIsBatchPattern(false);
+                if (rawRecordedSteps.length > 0) setRecordedSteps(rawRecordedSteps);
+              }}
+              className={`py-1 px-2 rounded border text-[10px] font-medium transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                !isBatchPattern
                   ? 'bg-purple-600 text-white border-purple-600 shadow-xs'
                   : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
               }`}
             >
-              🤖 RPA 代办
-            </button>
-            <button
-              onClick={() => setSaveMode('qa')}
-              className={`py-1 rounded border text-[10px] font-medium transition-all ${
-                saveMode === 'qa'
-                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
-                  : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-              }`}
-            >
-              🧪 QA 测试
+              <span>⚡ 线性单次模式</span>
+              <span className="text-[9px] opacity-80">(全部 {rawRecordedSteps.length || recordedSteps.length} 步单次重放)</span>
             </button>
           </div>
 
-          <div className="space-y-1">
-            <div className="text-[10px] text-gray-500 font-medium">
-              {saveMode === 'skill' ? 'Skill 规则名称:' : '流程配方名称:'}
+          {/* 前置页面导航步骤预览 (如果有) */}
+          {isBatchPattern && recordedSteps.filter((s) => !s.isLoop).length > 0 && (
+            <div className="rounded border border-indigo-100 bg-indigo-50/60 p-2 space-y-1 text-[10.5px]">
+              <div className="font-semibold text-indigo-950 text-[10px] flex items-center justify-between">
+                <span>🧭 前置导航与页面入口 ({recordedSteps.filter((s) => !s.isLoop).length} 步):</span>
+                <span className="text-[9px] text-indigo-600 font-medium">执行时先进入审批页</span>
+              </div>
+              <div className="space-y-1 max-h-24 overflow-y-auto pl-1">
+                {recordedSteps
+                  .filter((s) => !s.isLoop)
+                  .map((s, i) => (
+                    <div key={i} className="flex items-center gap-1.5 text-[9.5px] text-gray-700 bg-white/90 p-1 rounded border border-indigo-100">
+                      <span className="font-mono text-indigo-600 font-bold">{i + 1}.</span>
+                      <span className="truncate">{s.description}</span>
+                    </div>
+                  ))}
+              </div>
             </div>
-            <input
-              type="text"
-              value={newRecipeName}
-              onChange={(e) => setNewRecipeName(e.target.value)}
-              placeholder="输入名称"
-              className="w-full rounded border border-gray-300 bg-white px-2.5 py-1 text-[11px] outline-none focus:border-blue-500"
-              autoFocus
-            />
-          </div>
+          )}
 
-          {/* Skill 提炼智能反显预览 */}
-          {saveMode === 'skill' && (
-            <div className="rounded border border-blue-200 bg-white/80 p-2 space-y-1 text-[10.5px]">
-              <div className="font-semibold text-blue-900 flex items-center justify-between">
-                <span>🎯 智能提炼预览:</span>
-                <span className="text-[9.5px] text-blue-600">{distilledPreview.assertions.length} 条断言</span>
+          {/* 批量循环参数微调 */}
+          {isBatchPattern && (
+            <div className="rounded border border-blue-200 bg-white/90 p-2 space-y-2 text-[10.5px]">
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[10px] text-gray-600 font-medium">
+                  <span>循环列表项选择器 (Target Selector):</span>
+                  <span className="text-[9px] text-blue-600">自适应匹配整表/整列表</span>
+                </div>
+                <input
+                  type="text"
+                  value={loopItemSelector}
+                  onChange={(e) => setLoopItemSelector(e.target.value)}
+                  placeholder="如 table tbody tr 或 .ant-table-row"
+                  className="w-full rounded border border-gray-300 bg-white px-2 py-1 text-[10.5px] font-mono text-gray-800 outline-none focus:border-blue-500"
+                />
+                {/* 候选快捷标签 */}
+                <div className="flex items-center gap-1 flex-wrap pt-0.5">
+                  <span className="text-[9px] text-gray-400">快速推荐:</span>
+                  {['table tbody tr', '.ant-table-row', 'ul.list > li', '.el-table__row', '.item-row'].map((sel) => (
+                    <button
+                      key={sel}
+                      onClick={() => setLoopItemSelector(sel)}
+                      className="rounded bg-gray-100 hover:bg-blue-50 text-[9px] font-mono text-gray-600 hover:text-blue-700 px-1 py-0.2 border border-gray-200 cursor-pointer"
+                    >
+                      {sel}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="text-gray-600 text-[10px] line-clamp-2">
-                <b>验收标准: </b>{distilledPreview.acceptanceCriteria}
+
+              {/* 单项子步骤 (Sub-steps) 折叠/展开查看 */}
+              {subSteps.length > 0 && (
+                <div className="space-y-1 pt-1 border-t border-gray-100">
+                  <button
+                    onClick={() => setShowSubStepsDetails(!showSubStepsDetails)}
+                    className="flex items-center justify-between w-full text-[10px] text-blue-700 hover:text-blue-800 font-semibold cursor-pointer"
+                  >
+                    <span>每条记录执行的子动作 ({subSteps.length} 步):</span>
+                    <span>{showSubStepsDetails ? '收起 ▲' : '展开微调 ▼'}</span>
+                  </button>
+                  {showSubStepsDetails && (
+                    <div className="space-y-1 max-h-28 overflow-y-auto bg-slate-50 p-1.5 rounded border border-slate-200">
+                      {subSteps.map((sub, idx) => (
+                        <div key={idx} className="flex items-center gap-1.5 text-[9.5px] text-gray-700 bg-white p-1 rounded border border-gray-100">
+                          <span className="font-mono text-blue-600 font-bold shrink-0">{idx + 1}.</span>
+                          <span className="font-medium truncate">{sub.description}</span>
+                          {sub.value && (
+                            <span className="text-[9px] text-purple-700 font-mono bg-purple-50 px-1 rounded truncate">
+                              {sub.value}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 动态入参配置 */}
+          {parameters.length > 0 && (
+            <div className="rounded border border-purple-200 bg-white/90 p-2 space-y-1.5 text-[10.5px]">
+              <div className="font-semibold text-purple-900 text-[10px]">
+                📝 提取的动态入参 (执行时可按需修改):
               </div>
-              <div className="space-y-0.5 max-h-20 overflow-y-auto">
-                {distilledPreview.assertions.map((a, i) => (
-                  <div key={i} className="flex items-center gap-1 text-[9.5px] text-gray-700 bg-gray-50 p-1 rounded">
-                    <span className="text-blue-500 font-mono">✓</span>
-                    <span className="truncate">{a.description}</span>
+              <div className="space-y-1">
+                {parameters.map((p, idx) => (
+                  <div key={p.key} className="flex items-center gap-2">
+                    <span className="text-[10px] font-medium text-gray-600 shrink-0 w-16">{p.label}:</span>
+                    <input
+                      type="text"
+                      value={p.defaultValue}
+                      onChange={(e) => {
+                        const updated = [...parameters];
+                        updated[idx] = { ...p, defaultValue: e.target.value };
+                        setParameters(updated);
+                      }}
+                      className="flex-1 rounded border border-gray-300 bg-white px-2 py-0.5 text-[10px] outline-none focus:border-purple-500"
+                    />
                   </div>
                 ))}
               </div>
             </div>
           )}
+
+          {/* Skill 名称与 SOP 验收标准 */}
+          <div className="space-y-1">
+            <div className="text-[10px] text-gray-500 font-medium">Skill 名称:</div>
+            <input
+              type="text"
+              value={newRecipeName}
+              onChange={(e) => setNewRecipeName(e.target.value)}
+              placeholder="如：全量待办记录自动批量审批 Skill"
+              className="w-full rounded border border-gray-300 bg-white px-2.5 py-1 text-[11px] outline-none focus:border-blue-500 font-semibold"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-[10px] text-gray-500 font-medium">
+              <span>🎯 操作 SOP 与验收规则:</span>
+              <span className="text-[9.5px] text-blue-600">{distilledHabit?.assertions?.length || 0} 条断言</span>
+            </div>
+            <textarea
+              rows={2}
+              value={customCriteria}
+              onChange={(e) => setCustomCriteria(e.target.value)}
+              placeholder="描述执行目标与验收标准..."
+              className="w-full rounded border border-gray-300 bg-white p-1.5 text-[10px] text-gray-800 outline-none focus:border-blue-500"
+            />
+          </div>
 
           <div className="flex items-center justify-between pt-1 border-t border-purple-200/50">
             <button
@@ -715,11 +990,9 @@ export function WorkflowManagerCard() {
               <button
                 disabled={!newRecipeName.trim()}
                 onClick={() => void handleSave(false)}
-                className={`rounded px-3.5 py-0.5 text-[10.5px] font-bold text-white shadow-xs cursor-pointer disabled:opacity-40 ${
-                  saveMode === 'skill' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-purple-600 hover:bg-purple-700'
-                }`}
+                className="rounded bg-blue-600 hover:bg-blue-700 px-3.5 py-1 text-[10.5px] font-bold text-white shadow-xs cursor-pointer disabled:opacity-40"
               >
-                {saveMode === 'skill' ? '✨ 确认生成 Skill' : '快捷保存'}
+                ✨ 确认并沉淀为 Skill
               </button>
             </div>
           </div>

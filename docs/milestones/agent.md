@@ -148,3 +148,55 @@ pnpm build     # 构建 output/
 4. `AgentMessage.tsx`:场景标签用 `getScenarioLabel`(general → 通用助手)
 5. 测试:`agents.test.ts` 加 general 断言(system 含 4 能力 + 问好 / 全工具集 / label)
 6. 验证:`pnpm compile` ✅ / `pnpm test` 93 passed ✅ / `pnpm build` ✅
+
+## 流程录制与 RPA 工作台(2026-08-20,eca85e1)
+
+**背景**:在通用 AI 操作之外,新增"录制演示 → 提炼为可复用流程"的确定性自动化路径,覆盖两类用途:
+- **RPA 业务代办**:录制拟人操作,支持 `{{variable}}` 动态入参(如每日打卡、填报)
+- **QA 自动化测试**:录制 + 断言 + 自然语言验收标准 → 一键运行 → 生成测试报告
+
+**改动**:
+1. `utils/workflow/types.ts`(新):`CapturedAction` / `WorkflowStep`(含 `isLoop` / `loopItemSelector`)/ `WorkflowRecipe`(双模式 `rpa` | `qa`,含 `parameters`/`assertions`/`acceptanceCriteria`/`lastTestReport`)/ `TestAssertion` / `TestRunReport` / `TestSuiteRunReport` / `TestSkillTemplate` / `RecordingSession`
+2. `utils/workflow/recorder.ts`(新):content 内捕获真实拟人操作(点击/输入/回车/SVG 图标意图解析),抗干扰语义名 + 稳定 CSS 选择器生成,输入防抖合并;`buildWorkflowSteps` 提炼(过滤输入框前置聚焦点击/400ms 内连击)
+3. `utils/workflow/storage.ts`(新):配方 CRUD / 跨页面录制会话(异步互斥队列防竞态,5 分钟残留自清理)/ 验收 Skill 库(4 个预设 + 自定义增删)
+4. `utils/workflow/client.ts`(新):`sendWorkflowMessageToTab` —— 受限页面(chrome:// 等)拦截 + 6 次自愈重试 + content script 动态注入
+5. `entrypoints/workbench/main.tsx`(新):RPA 工作台,4 导航 `rpa` / `qa` / `skills` / `reports`;含录制控制、步骤编辑、参数化运行、QA 断言执行与 HTML 报告导出、Skill 蒸馏文本导入
+6. `components/sidepanel/WorkflowManagerCard.tsx`(新):侧边栏流程管理(录制入口 / 流程列表 / 运行 / 删除 / 技能蒸馏)
+7. `domTools/actions.ts` / `toolRegistry.ts`:执行端工具扩展
+8. 测试:`tests/workflow/workflow.test.ts`(steps 提炼 / 配方 CRUD / 会话持久化 / 断言与报告 / 技能库 / 双模分流)
+
+**验证**:`pnpm compile` ✅ / `pnpm test` 137 passed ✅ / `pnpm build` ✅
+
+## 同构列表循环遍历智能化(Loop Generalization,2026-08-24 完成)
+
+**背景**:用户录制时演示"点击第 1 行 → 点击第 2 行",期望系统理解意图为"遍历整个列表"而非机械重放两次;执行端需支持批量循环处理同构列表项(批量审批/批量浏览/长表格逐项检查)。
+
+**改动**:
+1. `utils/workflow/recorder.ts` — `buildWorkflowSteps` 新增 **Loop Induction**:连续两个 `:nth-of-type(n)` / `:nth-child(n)` 同构选择器的点击示范,自动归纳为单条 `isLoop` 循环步骤(`loopItemSelector` = 去 nth 的通用选择器)
+2. `domTools/actions.ts` — 新增 `loopElements` 工具:自动查找当前可见同构列表项/表格行逐条拟人点击(鼠标事件序列 + 滚动居中),指定选择器失效时自动降级 `table tbody tr` 等通用兜底
+3. `toolRegistry.ts` — 注册 `loopElements`(含 `maxItems` / `delayMs` 参数)
+4. `utils/workflow/storage.ts` — `saveTestSkill` 支持 `existingId` 更新既有 Skill(蒸馏二次保存不产生重复)
+5. UI:`WorkflowManagerCard` / `workbench` 接入循环步骤与 `loopElements` 执行
+6. 测试:`workflow.test.ts` 增补 Loop Generalization 用例(归纳为单条循环步骤 + 通用选择器正确)
+
+**验证**:`pnpm compile` ✅ / `pnpm test` 137 passed ✅
+
+## 单次示范智能习惯归纳与复合循环 RPA Skill (One-shot Habit Synthesis, 2026-08-27 完成)
+
+**背景**:用户仅需操作 1 条样本(如进入审批列表对第 1 条记录点击详情 -> 输入意见 -> 提交同意),系统由 AI 大模型(或启发式规则)自动分析 DOM 轨迹与页面结构,泛化总结为针对全列表的批量 RPA Skill;用户可在可视化卡片上微调纠偏,运行时自适应全量批量审批。
+
+**改动**:
+1. `utils/workflow/types.ts` — 扩展 `WorkflowStep`(`subSteps` / `maxLoopCount` / `onItemError` / `loopSummary`)与 `DistilledHabit` 数据模型
+2. `utils/workflow/skillDistiller.ts`(新) — **AI RPA 习惯归纳引擎**:
+   - `distillHabitHeuristic`: 离线秒级启发式归纳(列表特征识别、子动作序列提取、变量动态提取)
+   - `distillHabitWithLLM`: 结合活动模型(OpenAI / Claude / DeepSeek)智能推导业务习惯意图与结构化参数,失败平滑降级
+3. `domTools/actions.ts` — `loopElements` 升级:支持按 `itemSelector` 匹配全部可见项,并对每项按序执行 `subSteps`(支持元素内限定作用域、全局弹窗穿透、表单输入、回车提交与逐项自愈)
+4. `domTools/toolRegistry.ts` — `loopElements` 更新 schema,新增 `subSteps` 与 `onItemError` 参数定义
+5. `utils/workflow/storage.ts` — `interpolateStepVariables` 支持对 `subSteps` 进行嵌套变量递归替换
+6. UI 升级:
+   - `WorkflowManagerCard.tsx`: 录制完成后调用 AI 习惯归纳,展示「AI 习惯归纳与微调卡片」,支持模式切换(批量循环 vs 单次)、循环选择器快捷标签调整、子步骤折叠微调与动态参数配置;执行端实时派发复合子步骤
+   - `workbench/main.tsx`: 详情页展示循环子动作列表,执行引擎全面接入 `subSteps` 批量执行
+7. 测试: 新增 `tests/workflow/skillDistiller.test.ts`(4 项)+ `tests/domTools/loopElements.test.ts` 增补 `subSteps` 执行测试(共 164 项测试全绿)
+
+**验证**:`pnpm compile` ✅ / `pnpm test` 164 passed ✅ / `pnpm build` ✅ (790 kB)
+

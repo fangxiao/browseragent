@@ -273,7 +273,27 @@ function handleClick(e: MouseEvent): void {
     title: document.title,
   };
 
-  void appendActionToSession(act).then((count) => updateBadge(count));
+  recordAction(act);
+}
+
+let localCapturedCount = 0;
+
+function recordAction(act: CapturedAction): void {
+  // 1. 同步递增本地计数并即刻更新 Badge，确保 0ms 视觉即时响应
+  localCapturedCount++;
+  void updateBadge(localCapturedCount);
+
+  // 2. 同步向 background 发送消息进行即时持久化 (防止页面导航跳转导致 content 脚本 context 销毁丢动作)
+  if (typeof browser !== 'undefined' && browser.runtime?.sendMessage) {
+    browser.runtime.sendMessage({ type: 'WORKFLOW:RECORD_ACTION', action: act }).catch(() => {});
+  }
+  // 3. 本地 storage 保存并以 storage 返回的权威条数校准 badge
+  void appendActionToSession(act).then((count) => {
+    if (count > 0) {
+      localCapturedCount = count;
+      void updateBadge(count);
+    }
+  });
 }
 
 /** 输入内容防抖捕获 */
@@ -339,7 +359,7 @@ function handleKeydown(e: KeyboardEvent): void {
       title: document.title,
     };
 
-    void appendActionToSession(act).then((count) => updateBadge(count));
+    recordAction(act);
   }
 }
 
@@ -354,7 +374,7 @@ function flushLastInput(): void {
     const act = lastInputTarget.action;
     act.value = lastInputTarget.value;
     lastInputTarget = null;
-    void appendActionToSession(act).then((count) => updateBadge(count));
+    recordAction(act);
   }
 }
 
@@ -393,12 +413,53 @@ export function buildWorkflowSteps(actions: CapturedAction[]): WorkflowStep[] {
     deduplicated.push(act);
   }
 
-  // 3. 构建规范化 WorkflowStep
+  // 3. 构建规范化 WorkflowStep 并进行同构列表循环归纳 (Loop Induction)
   const steps: WorkflowStep[] = [];
   let idx = 0;
-  for (const act of deduplicated) {
+
+  for (let i = 0; i < deduplicated.length; i++) {
+    const act = deduplicated[i]!;
+    const nextAct = deduplicated[i + 1];
+
+    // 检测是否为同构数据列表/表格项的连续点击示范 (例如点击第1行，接着点击第2行)
+    const isNthSelector = (s: string) => /:(nth-of-type|nth-child)\(\d+\)/.test(s);
+    const getGeneralizedSelector = (s: string) => s.replace(/:(nth-of-type|nth-child)\(\d+\)/g, '');
+    const isDataListOrTable = (s: string) =>
+      /table|tbody|tr|td|\.ant-table|\.el-table|data-table|grid-cell|\.list-item|\.card-item/i.test(s) &&
+      !/nav|header|aside|sidebar|menu|\btabs?\b|\.tab|breadcrumb/i.test(s);
+
+    if (
+      act.type === 'click' &&
+      nextAct &&
+      nextAct.type === 'click' &&
+      isNthSelector(act.selector) &&
+      isNthSelector(nextAct.selector) &&
+      isDataListOrTable(act.selector) &&
+      isDataListOrTable(nextAct.selector) &&
+      act.selector !== nextAct.selector &&
+      getGeneralizedSelector(act.selector) === getGeneralizedSelector(nextAct.selector)
+    ) {
+      // 成功识别到列表项循环遍历模式！
+      idx++;
+      const genSelector = getGeneralizedSelector(act.selector);
+      const listName = act.targetText ? `${act.targetText}等列表项` : '列表/表格全部记录';
+      steps.push({
+        id: `step_${idx}`,
+        type: 'click',
+        description: `🔁 循环遍历「${listName}」中的每一项并查看`,
+        selector: act.selector,
+        targetText: act.targetText,
+        url: act.url,
+        isLoop: true,
+        loopItemSelector: genSelector,
+        loopActionType: 'click',
+      });
+      // 跳过后续重复的样本示范点击
+      i++;
+      continue;
+    }
+
     idx++;
-    if (!act) continue;
     if (act.type === 'click') {
       const desc = act.targetText ? `点击「${act.targetText}」` : `点击元素 ${act.selector}`;
       steps.push({
@@ -440,16 +501,31 @@ export function buildWorkflowSteps(actions: CapturedAction[]): WorkflowStep[] {
 
 /** 开始录制 (支持初次开启或页面跳转后自动续接) */
 export async function startRecording(isResume = false): Promise<{ ok: boolean; message: string }> {
-  if (isRecording) {
+  // 如果并非续接模式，强制重置录制上下文
+  if (!isResume) {
+    isRecording = false;
+    localCapturedCount = 0;
+  } else if (isRecording) {
     return { ok: true, message: '已在录制中' };
   }
+
   isRecording = true;
   lastInputTarget = null;
 
   if (!isResume) {
     const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
     await startActiveRecordingSession(undefined, currentUrl);
+  } else {
+    const session = await getActiveRecordingSession();
+    localCapturedCount = session?.actions?.length || 0;
   }
+
+  document.removeEventListener('click', handleClick, true);
+  document.removeEventListener('input', handleInput, true);
+  document.removeEventListener('keydown', handleKeydown, true);
+  document.removeEventListener('submit', handleSubmit, true);
+  window.removeEventListener('beforeunload', flushLastInput);
+  window.removeEventListener('pagehide', flushLastInput);
 
   document.addEventListener('click', handleClick, true);
   document.addEventListener('input', handleInput, true);
@@ -458,7 +534,7 @@ export async function startRecording(isResume = false): Promise<{ ok: boolean; m
   window.addEventListener('beforeunload', flushLastInput);
   window.addEventListener('pagehide', flushLastInput);
 
-  await updateBadge();
+  await updateBadge(localCapturedCount);
   return { ok: true, message: '🔴 开始录制流程，请在网页上进行操作' };
 }
 
@@ -471,6 +547,7 @@ export async function stopRecording(): Promise<{
 }> {
   flushLastInput();
   isRecording = false;
+  localCapturedCount = 0;
 
   document.removeEventListener('click', handleClick, true);
   document.removeEventListener('input', handleInput, true);
@@ -489,7 +566,7 @@ export async function stopRecording(): Promise<{
 /** 获取当前录制状态 */
 export async function getRecordingStatus(): Promise<{ isRecording: boolean; count: number }> {
   const session = await getActiveRecordingSession();
-  return { isRecording: Boolean(session?.isRecording), count: session?.actions?.length || 0 };
+  return { isRecording: Boolean(session?.isRecording), count: session?.actions?.length || localCapturedCount };
 }
 
 /** 页面加载时自动感知并续接录制状态 (针对百度等搜索跳转/页面刷新场景) */
@@ -498,6 +575,7 @@ export async function checkAndResumeRecording(): Promise<void> {
     const session = await getActiveRecordingSession();
     if (session && session.isRecording) {
       if (Date.now() - (session.startTime || 0) < 5 * 60 * 1000) {
+        localCapturedCount = session.actions?.length || 0;
         await startRecording(true /* isResume */);
         return;
       }
@@ -505,8 +583,10 @@ export async function checkAndResumeRecording(): Promise<void> {
     // 无活跃录制会话时，主动清理任何残留的悬浮提示条与监听器
     removeBadge();
     isRecording = false;
+    localCapturedCount = 0;
   } catch {
     removeBadge();
     isRecording = false;
+    localCapturedCount = 0;
   }
 }

@@ -371,7 +371,15 @@ const SENSITIVE_PATTERNS = [
 | content 未注入(页面在扩展加载前打开) | 工具无响应 | 失败回填"刷新页面";侧边栏提示 |
 | SPA 动态渲染延迟 | waitFor 失败 | sleep/waitFor 重试策略 + 提示刷新 |
 
----
+## 14. 流程录制与 RPA 工作台(2026-08-20 扩展)
+
+> 在通用 AI 操作之外新增**确定性自动化路径**:录制演示 → 提炼为可复用流程。对应 `docs/milestones/agent.md`「流程录制与 RPA 工作台」与需求 §3.3。
+
+- **录制层**(`utils/workflow/recorder.ts`):content 内捕获真实拟人操作(点击/输入/回车),智能语义名 + 稳定 CSS 选择器,跨页面持久化,`buildWorkflowSteps` 提炼(过滤冗余 + **Loop Induction**:连续同构 `:nth-child` 点击归纳为单条循环步骤)
+- **存储层**(`utils/workflow/storage.ts`):工作流配方 CRUD / 跨页录制会话 / 验收 Skill 库(预设 + 自定义蒸馏)
+- **通信层**(`utils/workflow/client.ts`):受限页面拦截 + 自愈重试 + content script 动态注入
+- **执行工具**(`domTools/actions.ts` `loopElements`):批量循环遍历同构列表/表格行,选择器失效自动降级兜底
+- **UI**:`entrypoints/workbench`(RPA 工作台,4 导航)+ `components/sidepanel/WorkflowManagerCard`
 
 ## 附:与 design.md §8 的对应
 本文档为 design.md §8(8.1-8.6)的完整展开与落地细节;§8 保持总览,细节以本文档为准。实现时以本文档为唯一实现依据。

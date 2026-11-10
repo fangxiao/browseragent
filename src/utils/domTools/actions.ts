@@ -12,23 +12,13 @@ import {
 
 const toStr = (v: unknown): string => String(v ?? '');
 
-/** 给元素加临时高亮描边(操作视觉反馈,1.8s 后自动移除)。见 docs/design/agent.md §10 */
-function flashHighlight(el: HTMLElement, color = '#3b82f6'): void {
-  const prevOutline = el.style.outline;
-  const prevOffset = el.style.outlineOffset;
-  const prevShadow = el.style.boxShadow;
-  const prevTransition = el.style.transition;
-  el.style.transition = 'outline 0.2s ease, box-shadow 0.2s ease';
-  el.style.outline = `3px solid ${color}`;
-  el.style.outlineOffset = '2px';
-  el.style.boxShadow = `0 0 16px ${color}`;
-  window.setTimeout(() => {
-    el.style.outline = prevOutline;
-    el.style.outlineOffset = prevOffset;
-    el.style.boxShadow = prevShadow;
-    el.style.transition = prevTransition;
-  }, 1800);
-}
+import { highlightActionElement, flashHighlight } from './visualOverlay';
+import {
+  injectSetOfMarksOverlay,
+  removeSetOfMarksOverlay,
+  clickAtCoordinate,
+  getCachedMarks,
+} from './setOfMarks';
 
 /** DOM → ElementInfo 树(语义元素树的数据源;深度受限避免过大) */
 function collectElementTree(root: Element, depth = 0, maxDepth = 6): ElementInfo[] {
@@ -246,19 +236,64 @@ function queryElement(
   return null;
 }
 
-/** 智能异步轮询等待元素就绪 (自动容错网络跳转/SPA异步渲染，最多等待 timeoutMs 毫秒) */
+/** 智能异步等待元素就绪 (结合 MutationObserver 变动监听与超时兜底，零延迟响应 SPA 异步渲染) */
 async function waitForSmartElement(
   selector?: string,
   targetText?: string,
   timeoutMs = 4000,
 ): Promise<HTMLElement | null> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const el = queryElement(selector, targetText);
-    if (el) return el;
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return null;
+  const el = queryElement(selector, targetText);
+  if (el) return el;
+
+  return new Promise<HTMLElement | null>((resolve) => {
+    let observer: MutationObserver | null = null;
+    let timer: any = null;
+    let pollInterval: any = null;
+
+    const cleanup = () => {
+      if (observer) {
+        observer.disconnect();
+        observer = null;
+      }
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    };
+
+    const check = () => {
+      const found = queryElement(selector, targetText);
+      if (found) {
+        cleanup();
+        resolve(found);
+        return true;
+      }
+      return false;
+    };
+
+    if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined' && document.body) {
+      try {
+        observer = new MutationObserver(() => {
+          check();
+        });
+        observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+      } catch {
+        /* ignore observer error */
+      }
+    }
+
+    // 辅助轮询(兜底 iframe 或属性未触发 observer 情况)
+    pollInterval = setInterval(check, 200);
+
+    timer = setTimeout(() => {
+      cleanup();
+      resolve(queryElement(selector, targetText));
+    }, timeoutMs);
+  });
 }
 
 /** 从 DOM 收集表格/列表为字符串矩阵 */
@@ -971,7 +1006,7 @@ export const actions = {
     const theme = toStr(args.theme) || 'tech-blue';
 
     // 1. 生成微信专用全内联富文本 HTML
-    let htmlContent = toStr(args.contentHtml);
+    let htmlContent = toStr(args.htmlContent || args.contentHtml);
     if (!htmlContent && contentMarkdown) {
       htmlContent = markdownToWechatHtml(contentMarkdown, theme);
     }
@@ -1003,34 +1038,16 @@ export const actions = {
     const titleEl = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
       '#title, input.js_title, [placeholder*="标题"], .title_input',
     );
-    if (titleEl && title) {
-      flashHighlight(titleEl);
-      titleEl.value = title.slice(0, 64);
-      titleEl.dispatchEvent(new Event('input', { bubbles: true }));
-      titleEl.dispatchEvent(new Event('change', { bubbles: true }));
-    }
 
     // 3. 定位作者输入框并填充 (#author 或 [placeholder="请输入作者"])
     const authorEl = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
       '#author, input.js_author, [placeholder*="作者"]',
     );
-    if (authorEl && author) {
-      flashHighlight(authorEl);
-      authorEl.value = author.slice(0, 16);
-      authorEl.dispatchEvent(new Event('input', { bubbles: true }));
-      authorEl.dispatchEvent(new Event('change', { bubbles: true }));
-    }
 
     // 4. 定位摘要输入框并填充 (#js_description)
     const digestEl = document.querySelector<HTMLTextAreaElement | HTMLInputElement>(
       '#js_description, textarea.js_description, #digest, [placeholder*="摘要"]',
     );
-    if (digestEl && digest) {
-      flashHighlight(digestEl);
-      digestEl.value = digest.slice(0, 120);
-      digestEl.dispatchEvent(new Event('input', { bubbles: true }));
-      digestEl.dispatchEvent(new Event('change', { bubbles: true }));
-    }
 
     // 5. 定位微信编辑器富文本正文容器 (兼容 UEditor iframe 与普通 contenteditable 容器)
     let editorBody: HTMLElement | null = null;
@@ -1045,6 +1062,35 @@ export const actions = {
       editorBody = document.querySelector<HTMLElement>(
         '#ueditor_0, .edui-body-container, [contenteditable="true"], .rich_media_content, #js_editor',
       );
+    }
+
+    // 严格校验编辑页 DOM (若未定位到标题输入框或正文编辑器容器，必须返回 ok: false)
+    if (!titleEl || !editorBody) {
+      return {
+        ok: false,
+        error: '未检测到微信图文编辑框，请确保当前浏览器停留在【新建图文】草稿编辑页面',
+      };
+    }
+
+    if (titleEl && title) {
+      flashHighlight(titleEl);
+      titleEl.value = title.slice(0, 64);
+      titleEl.dispatchEvent(new Event('input', { bubbles: true }));
+      titleEl.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    if (authorEl && author) {
+      flashHighlight(authorEl);
+      authorEl.value = author.slice(0, 16);
+      authorEl.dispatchEvent(new Event('input', { bubbles: true }));
+      authorEl.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    if (digestEl && digest) {
+      flashHighlight(digestEl);
+      digestEl.value = digest.slice(0, 120);
+      digestEl.dispatchEvent(new Event('input', { bubbles: true }));
+      digestEl.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     let injectedEditor = false;
@@ -1075,6 +1121,36 @@ export const actions = {
       }
     }
 
+    // 严禁在 injectedFields.editorBody === false 时返回 ok: true
+    if (htmlContent && !injectedEditor) {
+      return {
+        ok: false,
+        error: '未检测到微信图文编辑框，请确保当前浏览器停留在【新建图文】草稿编辑页面',
+      };
+    }
+
+    // 6. 自动触发「保存为草稿」落盘
+    let saveTriggered = false;
+    try {
+      const saveBtn =
+        document.querySelector<HTMLElement>(
+          '#js_send button.btn_primary, #js_submit, button.js_save, button[data-testid="save_draft"], #js_save, button.js_save_draft',
+        ) ||
+        Array.from(document.querySelectorAll<HTMLElement>('button, a.btn')).find((b) =>
+          (b.innerText || b.textContent || '').includes('保存'),
+        );
+
+      if (saveBtn) {
+        saveBtn.click();
+        saveTriggered = true;
+      }
+    } catch {
+      /* ignore click save error */
+    }
+
+    // 触发保存后，等待页面异步落盘
+    await new Promise((r) => setTimeout(r, 600));
+
     return {
       ok: true,
       data: {
@@ -1086,10 +1162,13 @@ export const actions = {
           title: Boolean(titleEl),
           author: Boolean(authorEl),
           digest: Boolean(digestEl),
-          editorBody: Boolean(editorBody),
+          editorBody: Boolean(editorBody && (injectedEditor || !htmlContent)),
         },
+        savedDraft: saveTriggered,
         wordCount: (contentMarkdown || htmlContent).length,
-        note: '🎉 已成功将精美排版内容写入微信公众平台草稿！',
+        note: saveTriggered
+          ? '🎉 已成功将精美排版内容写入微信公众平台并已自动保存草稿！'
+          : '🎉 已成功将精美排版内容写入微信公众平台草稿！',
       },
     };
   },
@@ -1332,6 +1411,200 @@ export const actions = {
         tagName: el.tagName.toLowerCase(),
         modifiedStyles: modifiedKeys,
         message: `已成功修改元素样式: ${modifiedKeys.join(', ')}`,
+      },
+    };
+  },
+
+  loopElements: async (args: Record<string, unknown>): Promise<ToolResult> => {
+    const selector = toStr(args.selector);
+    const itemSelector = toStr(args.itemSelector);
+    const maxItems = Math.max(1, Number(args.maxItems ?? 30) || 30);
+    const delayMs = Math.max(100, Number(args.delayMs ?? 450) || 450);
+    const subSteps = Array.isArray(args.subSteps) ? (args.subSteps as Array<Record<string, unknown>>) : [];
+    const onItemError = toStr(args.onItemError || 'skip');
+
+    const generalizedSelector =
+      itemSelector || (selector ? selector.replace(/:(nth-of-type|nth-child)\(\d+\)/g, '') : '');
+
+    if (!generalizedSelector) {
+      return { ok: false, error: '未指定有效的循环列表项选择器' };
+    }
+
+    let elements = Array.from(document.querySelectorAll<HTMLElement>(generalizedSelector));
+    if (elements.length === 0) {
+      elements = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          'table tbody tr a, table tbody tr, ul.ant-list-items li, ul li a, ul li',
+        ),
+      );
+    }
+
+    const visibleElements = elements.filter((el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).display !== 'none';
+    });
+
+    const targetList = visibleElements.slice(0, maxItems);
+    let successCount = 0;
+    const itemResults: Array<{ index: number; ok: boolean; error?: string }> = [];
+
+    for (let i = 0; i < targetList.length; i++) {
+      const el = targetList[i];
+      if (!el) continue;
+      try {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        if (subSteps.length > 0) {
+          // 逐个执行子动作 (如: 点击详情 -> 输入意见 -> 提交)
+          for (const sub of subSteps) {
+            const subType = toStr(sub.type || 'click');
+            const subSel = toStr(sub.selector);
+            const subVal = toStr(sub.value);
+
+            let targetEl: HTMLElement | null = null;
+            if (subSel) {
+              // 1. 优先在当前行/项容器内寻找
+              try {
+                targetEl = el.querySelector<HTMLElement>(subSel);
+              } catch {
+                /* ignore */
+              }
+              // 2. 若当前行未找到，向全局弹层/抽屉/模态框中寻找
+              if (!targetEl) {
+                try {
+                  targetEl = document.querySelector<HTMLElement>(subSel);
+                } catch {
+                  /* ignore */
+                }
+              }
+            }
+
+            // 兜底: 若为点击且有 targetText，可在 el 或全局弹层内按文本匹配
+            if (!targetEl && sub.targetText) {
+              const text = toStr(sub.targetText).trim();
+              const findIn = (root: Element) =>
+                Array.from(root.querySelectorAll<HTMLElement>('button, a, [role="button"], span, div')).find(
+                  (c) => (c.innerText || c.textContent || '').trim() === text,
+                );
+              targetEl = findIn(el) || findIn(document.body) || null;
+            }
+
+            if (subType === 'click') {
+              const clickTarget = targetEl || el;
+              clickTarget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              clickTarget.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+              clickTarget.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+              clickTarget.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+              clickTarget.click();
+            } else if (subType === 'type') {
+              const inputTarget =
+                (targetEl as HTMLInputElement) ||
+                el.querySelector<HTMLInputElement>('input, textarea') ||
+                document.querySelector<HTMLInputElement>('.ant-modal input, .ant-modal textarea, input, textarea');
+              if (inputTarget) {
+                inputTarget.focus();
+                inputTarget.value = subVal;
+                inputTarget.dispatchEvent(new Event('input', { bubbles: true }));
+                inputTarget.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            } else if (subType === 'pressEnter') {
+              const keyTarget = (targetEl as HTMLElement) || document.activeElement || el;
+              keyTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+              keyTarget.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+            }
+
+            const wait = Math.max(50, Number(sub.waitMs ?? 200));
+            await new Promise((r) => setTimeout(r, wait));
+          }
+        } else {
+          // 纯行点击
+          el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+          el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+          el.click();
+        }
+
+        successCount++;
+        itemResults.push({ index: i + 1, ok: true });
+        await new Promise((r) => setTimeout(r, delayMs));
+      } catch (itemErr) {
+        itemResults.push({ index: i + 1, ok: false, error: (itemErr as Error).message });
+        if (onItemError === 'stop') {
+          break;
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      data: {
+        totalFound: visibleElements.length,
+        processedCount: successCount,
+        itemResults,
+        message: `已成功遍历 ${successCount}/${visibleElements.length} 项列表记录`,
+      },
+    };
+  },
+
+  injectSetOfMarks: async (args: Record<string, unknown>): Promise<ToolResult> => {
+    const maxMarks = Number(args.maxMarks) || 40;
+    const marks = injectSetOfMarksOverlay({ maxMarks });
+    return {
+      ok: true,
+      data: {
+        marksCount: marks.length,
+        marks,
+        note: `已为 ${marks.length} 个可视可交互元素生成数字编号视觉标记`,
+      },
+    };
+  },
+
+  removeSetOfMarks: async (): Promise<ToolResult> => {
+    removeSetOfMarksOverlay();
+    return { ok: true, data: { note: '已清除视觉编号标记' } };
+  },
+
+  clickCoordinate: async (args: Record<string, unknown>): Promise<ToolResult> => {
+    const x = Number(args.x);
+    const y = Number(args.y);
+    if (isNaN(x) || isNaN(y)) {
+      return { ok: false, error: '请提供有效的屏幕坐标 x 与 y' };
+    }
+    const res = clickAtCoordinate(x, y);
+    if (!res.ok) return { ok: false, error: res.error || '坐标点击失败' };
+    return {
+      ok: true,
+      data: {
+        x,
+        y,
+        targetTag: res.targetTag,
+        targetText: res.targetText,
+        note: `🎯 已成功在坐标 (${x}, ${y}) 点击目标元素 <${res.targetTag}>: "${res.targetText || ''}"`,
+      },
+    };
+  },
+
+  clickMark: async (args: Record<string, unknown>): Promise<ToolResult> => {
+    const markId = Number(args.markId ?? args.markNumber ?? args.id);
+    if (isNaN(markId) || markId <= 0) {
+      return { ok: false, error: '请指定有效的数字编号 markId' };
+    }
+    const marks = getCachedMarks();
+    const target = marks.find((m) => m.id === markId);
+    if (!target) {
+      return { ok: false, error: `未找到编号为 [${markId}] 的视觉标记元素` };
+    }
+    const res = clickAtCoordinate(target.center.x, target.center.y);
+    if (!res.ok) return { ok: false, error: res.error || `点击编号 [${markId}] 失败` };
+    return {
+      ok: true,
+      data: {
+        markId,
+        x: target.center.x,
+        y: target.center.y,
+        targetTag: target.tag,
+        targetText: target.text,
+        note: `🎯 已成功点击视觉标记 [${markId}] -> <${target.tag}> "${target.text}"`,
       },
     };
   },

@@ -161,20 +161,23 @@ export async function listTestSkills(): Promise<import('./types').TestSkillTempl
   }
 }
 
-/** 保存自定义测试验收 Skill */
+/** 保存/更新自定义测试验收 Skill (支持以 existingId 更新已有 Skill) */
 export async function saveTestSkill(
   name: string,
   acceptanceCriteria: string,
   assertions: import('./types').TestAssertion[],
   description?: string,
   targetUrl?: string,
+  existingId?: string,
 ): Promise<import('./types').TestSkillTemplate> {
   const all = await listTestSkills();
   const storeMap: Record<string, import('./types').TestSkillTemplate> = {};
   all.filter((s) => !s.isPreset).forEach((s) => (storeMap[s.id] = s));
 
   const now = Date.now();
-  const skillId = `skill_${now}`;
+  const skillId = existingId || `skill_${now}`;
+  const existing = storeMap[skillId];
+
   const skill: import('./types').TestSkillTemplate = {
     id: skillId,
     name: name.trim(),
@@ -182,7 +185,8 @@ export async function saveTestSkill(
     targetUrl: targetUrl?.trim(),
     acceptanceCriteria: acceptanceCriteria.trim(),
     assertions,
-    createdAt: now,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
     isPreset: false,
   };
 
@@ -274,10 +278,17 @@ export async function appendActionToSession(action: import('./types').CapturedAc
         return;
       }
       try {
-        const session = await getActiveRecordingSession();
-        if (!session || !session.isRecording) {
-          resolve(0);
-          return;
+        let session = await getActiveRecordingSession();
+        // 如果录制会话尚未建立或超时，自动自愈创建活跃会话 (确保捕捉动作永远不会丢失或返回 0)
+        if (!session) {
+          session = {
+            isRecording: true,
+            startUrl: action.url || '',
+            startTime: Date.now(),
+            actions: [],
+          };
+        } else if (!session.isRecording) {
+          session.isRecording = true;
         }
 
         // 若同一输入框且为 type 动作，合并更新值
@@ -319,4 +330,125 @@ export async function stopActiveRecordingSession(): Promise<{
       }
     });
   });
+}
+
+/** 变量插值替换:将步骤中的 {{key}} 占位符替换为用户指定的动态参数值 */
+export function interpolateStepVariables(
+  step: WorkflowStep,
+  variables?: Record<string, string>,
+): WorkflowStep {
+  if (!variables || Object.keys(variables).length === 0) return step;
+
+  const replaceVar = (text?: string): string | undefined => {
+    if (!text) return text;
+    return text.replace(/\{\{\s*([a-zA-Z0-9_-]+)\s*\}\}/g, (_, key) => {
+      return key in variables ? String(variables[key]) : `{{${key}}}`;
+    });
+  };
+
+  return {
+    ...step,
+    description: replaceVar(step.description) || step.description,
+    selector: replaceVar(step.selector),
+    targetText: replaceVar(step.targetText),
+    value: replaceVar(step.value),
+    url: replaceVar(step.url),
+    loopItemSelector: replaceVar(step.loopItemSelector),
+    subSteps: step.subSteps
+      ? step.subSteps.map((sub) => interpolateStepVariables(sub, variables))
+      : undefined,
+  };
+}
+
+/** 导出工作流配方为标准 JSON 格式字符串 */
+export async function exportWorkflowRecipesJson(recipeIds?: string[]): Promise<string> {
+  const all = await listWorkflowRecipes();
+  const targets = recipeIds && recipeIds.length > 0
+    ? all.filter((r) => recipeIds.includes(r.id))
+    : all;
+
+  const bundle = {
+    version: '1.0',
+    schema: 'browseragent-workflow-recipes',
+    exportedAt: Date.now(),
+    count: targets.length,
+    recipes: targets,
+  };
+
+  return JSON.stringify(bundle, null, 2);
+}
+
+/** 从 JSON 字符串解析并批量导入工作流配方 */
+export async function importWorkflowRecipesJson(
+  jsonString: string,
+): Promise<{ importedCount: number; recipes: WorkflowRecipe[]; errors: string[] }> {
+  const errors: string[] = [];
+  const imported: WorkflowRecipe[] = [];
+
+  try {
+    const parsed = JSON.parse(jsonString);
+    let rawList: any[] = [];
+
+    if (Array.isArray(parsed)) {
+      rawList = parsed;
+    } else if (parsed && Array.isArray(parsed.recipes)) {
+      rawList = parsed.recipes;
+    } else if (parsed && typeof parsed === 'object' && parsed.name && Array.isArray(parsed.steps)) {
+      rawList = [parsed];
+    } else {
+      return { importedCount: 0, recipes: [], errors: ['无效的工作流 JSON 格式：缺少 recipes 列表或配方对象'] };
+    }
+
+    for (let i = 0; i < rawList.length; i++) {
+      const item = rawList[i];
+      if (!item || typeof item !== 'object') {
+        errors.push(`第 ${i + 1} 项数据格式无效`);
+        continue;
+      }
+      if (!item.name || typeof item.name !== 'string' || !item.name.trim()) {
+        errors.push(`第 ${i + 1} 项工作流缺少有效的名称 name`);
+        continue;
+      }
+      if (!Array.isArray(item.steps) || item.steps.length === 0) {
+        errors.push(`工作流「${item.name}」缺少有效的步骤列表 steps`);
+        continue;
+      }
+
+      const validSteps: WorkflowStep[] = item.steps.map((s: any, sIdx: number) => ({
+        id: s.id || `step_${Date.now()}_${sIdx}`,
+        type: s.type || 'click',
+        description: s.description || `步骤 ${sIdx + 1}`,
+        selector: s.selector,
+        targetText: s.targetText,
+        value: s.value,
+        url: s.url,
+        waitMs: s.waitMs,
+        humanLike: s.humanLike,
+        isLoop: s.isLoop,
+        loopItemSelector: s.loopItemSelector,
+        loopActionType: s.loopActionType,
+      }));
+
+      const saved = await saveWorkflowRecipe(item.name, validSteps, {
+        id: item.id,
+        description: item.description,
+        mode: item.mode,
+        startUrl: item.startUrl,
+        urlPattern: item.urlPattern,
+        parameters: item.parameters,
+        assertions: item.assertions,
+        acceptanceCriteria: item.acceptanceCriteria,
+      });
+
+      imported.push(saved);
+    }
+  } catch (err) {
+    errors.push(`JSON 解析失败: ${(err as Error).message}`);
+  }
+
+  return {
+    importedCount: imported.length,
+    recipes: imported,
+    errors,
+  };
 }

@@ -5,8 +5,11 @@ import {
   listWorkflowRecipes,
   getWorkflowRecipe,
   deleteWorkflowRecipe,
+  exportWorkflowRecipesJson,
+  importWorkflowRecipesJson,
+  interpolateStepVariables,
 } from '../../src/utils/workflow/storage';
-import type { CapturedAction } from '../../src/utils/workflow/types';
+import type { CapturedAction, WorkflowStep } from '../../src/utils/workflow/types';
 
 describe('Workflow System (流程自动化与工作流配方)', () => {
   let mockStore: Record<string, any> = {};
@@ -334,6 +337,94 @@ describe('Workflow System (流程自动化与工作流配方)', () => {
     const qaList = all.filter((r) => r.mode === 'qa');
     expect(rpaList.length).toBe(1);
     expect(qaList.length).toBe(1);
+  });
+
+  it('buildWorkflowSteps: 自动将同构列表项的连续点击归纳为循环遍历步骤 (Loop Generalization)', () => {
+    const rawActions: CapturedAction[] = [
+      {
+        type: 'click',
+        timestamp: Date.now(),
+        selector: 'table > tbody > tr:nth-of-type(1) > td > a',
+        targetText: '查看第1条待办',
+        tag: 'a',
+        url: 'https://oa.example.com/approvals',
+        title: '我的审批',
+      },
+      {
+        type: 'click',
+        timestamp: Date.now() + 1000,
+        selector: 'table > tbody > tr:nth-of-type(2) > td > a',
+        targetText: '查看第2条待办',
+        tag: 'a',
+        url: 'https://oa.example.com/approvals',
+        title: '我的审批',
+      },
+    ];
+
+    const steps = buildWorkflowSteps(rawActions);
+    expect(steps.length).toBe(1);
+    expect(steps[0]!.isLoop).toBe(true);
+    expect(steps[0]!.description).toContain('循环遍历');
+    expect(steps[0]!.loopItemSelector).toBe('table > tbody > tr > td > a');
+  });
+
+  it('interpolateStepVariables: 正确将 {{key}} 占位符替换为用户变量值', () => {
+    const rawStep: WorkflowStep = {
+      id: 'step_1',
+      type: 'type',
+      description: '在搜索框输入「{{keyword}}」',
+      selector: '#input-{{fieldId}}',
+      targetText: '{{fieldLabel}}',
+      value: '{{keyword}}',
+      url: 'https://example.com/search?q={{keyword}}',
+    };
+
+    const interpolated = interpolateStepVariables(rawStep, {
+      keyword: '海尔消金',
+      fieldId: 'kw',
+      fieldLabel: '搜索',
+    });
+
+    expect(interpolated.description).toBe('在搜索框输入「海尔消金」');
+    expect(interpolated.selector).toBe('#input-kw');
+    expect(interpolated.targetText).toBe('搜索');
+    expect(interpolated.value).toBe('海尔消金');
+    expect(interpolated.url).toBe('https://example.com/search?q=海尔消金');
+  });
+
+  it('exportWorkflowRecipesJson & importWorkflowRecipesJson: 完整闭环支持导出为 JSON 并成功导入', async () => {
+    await saveWorkflowRecipe(
+      '百度搜索流程',
+      [
+        {
+          id: 's1',
+          type: 'type',
+          description: '输入搜索词',
+          selector: '#kw',
+          value: '{{keyword}}',
+        },
+      ],
+      {
+        parameters: [
+          { key: 'keyword', label: '搜索词', defaultValue: 'AI' },
+        ],
+      },
+    );
+
+    const json = await exportWorkflowRecipesJson();
+    expect(json).toContain('browseragent-workflow-recipes');
+    expect(json).toContain('百度搜索流程');
+    expect(json).toContain('{{keyword}}');
+
+    mockStore = {}; // 清空存储模拟从新环境导入
+    const importRes = await importWorkflowRecipesJson(json);
+    expect(importRes.importedCount).toBe(1);
+    expect(importRes.recipes[0]!.name).toBe('百度搜索流程');
+    expect(importRes.recipes[0]!.parameters?.[0]!.key).toBe('keyword');
+
+    const loaded = await listWorkflowRecipes();
+    expect(loaded.length).toBe(1);
+    expect(loaded[0]!.name).toBe('百度搜索流程');
   });
 });
 
