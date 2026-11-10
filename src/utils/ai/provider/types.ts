@@ -36,6 +36,16 @@ export interface AiSettings {
   trustedSession: boolean;
   /** 调试模式:展开过程步骤与详细工具调用日志 */
   debugMode?: boolean;
+  /** 平台服务端基础地址 (例如 http://localhost:8000) */
+  platformHost?: string;
+  /** 平台鉴权 JWT Token */
+  platformToken?: string;
+  /** 端云协同通信网关 WebSocket 地址(RFC-E1) */
+  tunnelUrl?: string;
+  /** AgentPlatform 平台服务端 HTTP API 基础地址(RFC-E2) */
+  platformApiUrl?: string;
+  /** 是否开启端云双向长连接隧道 */
+  enableTunnel?: boolean;
 }
 
 export interface ChatMessage {

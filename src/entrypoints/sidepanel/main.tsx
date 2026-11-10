@@ -33,6 +33,7 @@ function App() {
   const [history, setHistory] = useState<AgentSession[]>([]);
   const [input, setInput] = useState('');
   const [toast, setToast] = useState('');
+  const [tunnelStatus, setTunnelStatus] = useState<'connected' | 'connecting' | 'reconnecting' | 'disconnected'>('disconnected');
 
   const handleRef = useRef<AgentSessionHandle | null>(null);
   const settingsRef = useRef<AiSettings | null>(null);
@@ -44,6 +45,26 @@ function App() {
   const isComposingRef = useRef(false);
 
   const [activeTab, setActiveTab] = useState<{ id?: number; url?: string; title?: string }>({});
+
+  // 监听隧道状态
+  useEffect(() => {
+    if (typeof browser !== 'undefined' && browser.storage?.local) {
+      void browser.storage.local.get('browseragent_tunnel_status').then((res: any) => {
+        if (res?.browseragent_tunnel_status) {
+          setTunnelStatus(res.browseragent_tunnel_status);
+        }
+      });
+    }
+    const onMsg = (msg: any) => {
+      if (msg?.type === 'TUNNEL:STATUS_CHANGE' && msg.status) {
+        setTunnelStatus(msg.status);
+      }
+    };
+    if (typeof browser !== 'undefined' && browser.runtime?.onMessage) {
+      browser.runtime.onMessage.addListener(onMsg);
+      return () => browser.runtime.onMessage.removeListener(onMsg);
+    }
+  }, []);
 
   // 实时感知当前激活标签页的 URL 与标题
   useEffect(() => {
@@ -270,6 +291,20 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 监听扩展设置变更:在 options 页修改 API Key / provider 后,已打开的侧边栏自动刷新配置
+  // (否则挂载时读到的旧快照会一直报「尚未配置 AI 服务」)
+  useEffect(() => {
+    const onChanged = (changes: Record<string, { newValue?: unknown }>) => {
+      if (changes.aiSettings) {
+        void getSettings().then(setSettings);
+      }
+    };
+    browser.storage?.local?.onChanged?.addListener(onChanged);
+    return () => {
+      browser.storage?.local?.onChanged?.removeListener(onChanged);
+    };
+  }, []);
+
   // 消息变化 → 防抖保存到当前会话(chrome.storage.local,本地持久化)
   useEffect(() => {
     if (!sessionIdRef.current) return;
@@ -469,7 +504,37 @@ function App() {
 
   return (
     <div className="flex h-screen flex-col gap-2 p-3">
-      <header className="flex items-center justify-end pb-0.5">
+      <header className="flex items-center justify-between pb-0.5">
+        <div className="flex items-center gap-1.5">
+          {settings?.enableTunnel && (
+            <button
+              onClick={() => browser.runtime.openOptionsPage()}
+              title={`AgentPlatform 端云隧道: ${
+                tunnelStatus === 'connected' ? '🟢 已连接' : tunnelStatus === 'reconnecting' ? '🔴 重连中' : '🟡 连接中'
+              } (点击配置)`}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium border transition-colors cursor-pointer ${
+                tunnelStatus === 'connected'
+                  ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
+                  : tunnelStatus === 'reconnecting'
+                  ? 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'
+                  : 'bg-yellow-50 text-yellow-700 border-yellow-200 hover:bg-yellow-100'
+              }`}
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  tunnelStatus === 'connected'
+                    ? 'bg-green-500'
+                    : tunnelStatus === 'reconnecting'
+                    ? 'bg-red-500 animate-pulse'
+                    : 'bg-yellow-500 animate-pulse'
+                }`}
+              ></span>
+              <span>
+                {tunnelStatus === 'connected' ? '平台已连' : tunnelStatus === 'reconnecting' ? '平台重连' : '连接中'}
+              </span>
+            </button>
+          )}
+        </div>
         <div className="flex items-center gap-1">
           <button
             onClick={newChat}
@@ -662,7 +727,7 @@ function App() {
             <div className="flex items-center justify-between pb-2 border-b border-gray-100 mb-1">
               <div className="font-semibold text-gray-900 text-xs flex items-center gap-1.5">
                 <span>🤖</span>
-                <span>快捷流程与自动化遥控</span>
+                <span>快捷流程自动化</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <button
